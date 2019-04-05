@@ -27,11 +27,104 @@ static HMODULE shell32_module = NULL;
 DECL_WINDOWS_FUNCTION(static, HRESULT, SHGetFolderPathA, 
 		      (HWND, int, HANDLE, DWORD, LPSTR));
 
-struct settings_w {
-    HKEY sesskey;
+
+/* Begin PuttyFile Addon */
+static enum storage_t storagetype = STORAGE_REG;
+
+static const char hex[16] = "0123456789ABCDEF";
+static char seedpath[2 * MAX_PATH + 10] = "\0";
+static char sesspath[2 * MAX_PATH] = "\0";
+static char sshkpath[2 * MAX_PATH] = "\0";
+static char oldpath[2 * MAX_PATH] = "\0";
+static char sessionsuffix[16] = "\0";
+static char keysuffix[16] = "\0";
+
+
+// Settings item linked list struct
+struct setItem {
+	char* key;
+	char* value;
+	struct setItem* next;
 };
 
-settings_w *open_settings_w(const char *sessionname, char **errmsg)
+
+struct settings_r {
+	HKEY sesskey;
+	unsigned int fromFile;
+	struct setItem* handle;
+	char* fileBuf;
+};
+
+// patched settings_w, was called setPack
+// TODO: should be a union that contains either HKEY, or the file values...
+struct settings_w {
+	HKEY sesskey;
+	unsigned int fromFile;
+	struct setItem* handle;
+	char* fileBuf;
+};
+
+enum storage_t get_storagetype(void)
+{
+	return storagetype;
+}
+
+void set_storagetype(enum storage_t new_storagetype)
+{
+	storagetype = new_storagetype;
+}
+
+static void mungestr(const char *in, char *out)
+{
+	int candot = 0;
+
+	while (*in) {
+		if (*in == ' ' || *in == '\\' || *in == '*' || *in == '?' ||
+			*in == '%' || *in < ' ' || *in > '~' || (*in == '.'
+				&& !candot)) {
+			*out++ = '%';
+			*out++ = hex[((unsigned char)*in) >> 4];
+			*out++ = hex[((unsigned char)*in) & 15];
+		}
+		else
+			*out++ = *in;
+		in++;
+		candot = 1;
+	}
+	*out = '\0';
+	return;
+}
+
+static void unmungestr(const char *in, char *out, int outlen)
+{
+	while (*in) {
+		if (*in == '%' && in[1] && in[2]) {
+			int i, j;
+
+			i = in[1] - '0';
+			i -= (i > 9 ? 7 : 0);
+			j = in[2] - '0';
+			j -= (j > 9 ? 7 : 0);
+
+			*out++ = (i << 4) + j;
+			if (!--outlen)
+				return;
+			in += 3;
+		}
+		else {
+			*out++ = *in++;
+			if (!--outlen)
+				return;
+		}
+	}
+	*out = '\0';
+	return;
+}
+/* End PuttyFile Addon */
+
+
+
+settings_w *reg_open_settings_w(const char *sessionname, char **errmsg)
 {
     HKEY subkey1, sesskey;
     int ret;
@@ -67,31 +160,208 @@ settings_w *open_settings_w(const char *sessionname, char **errmsg)
     return toret;
 }
 
-void write_setting_s(settings_w *handle, const char *key, const char *value)
+/*
+ * File version of open_settings_w
+*/
+settings_w *file_open_settings_w(const char *sessionname, char **errmsg)
+{
+	char *p;
+	*errmsg = NULL;
+
+	if (!sessionname || !*sessionname) {
+		sessionname = "Default Settings";
+	}
+
+	/* JK: if sessionname contains [registry] -> cut it off */
+	/*if ( *(sessionname+strlen(sessionname)-1) == ']') {
+		p = strrchr(sessionname, '[');
+		*(p-1) = '\0';
+	}*/
+
+	p = snewn(3 * strlen(sessionname) + 1, char);
+	mungestr(sessionname, p);
+
+	settings_w *sp = snew(settings_w);
+	sp->fromFile = 0;
+	sp->handle = NULL;
+
+	/* JK: secure pack for filename */
+	sp->fileBuf = snewn(3 * strlen(p) + 1 + 16, char);
+	packstr(p, sp->fileBuf);
+	strcat(sp->fileBuf, sessionsuffix);
+	sfree(p);
+
+	return sp;
+}
+
+
+void reg_write_setting_s(settings_w *handle, const char *key, const char *value)
 {
     if (handle)
         RegSetValueEx(handle->sesskey, key, 0, REG_SZ, (CONST BYTE *)value,
 		      1 + strlen(value));
 }
 
-void write_setting_i(settings_w *handle, const char *key, int value)
+/*
+ * File version of write_setting_s
+*/
+void file_write_setting_s(settings_w *handle, const char *key, const char *value)
+{
+	struct setItem *st;
+
+	if (handle) {
+		/* JK: counting max length of keys/values */
+		handle->fromFile = max(handle->fromFile, strlen(key) + 1);
+		handle->fromFile = max(handle->fromFile, strlen(value) + 1);
+
+		st = handle->handle;
+
+		while (st) {
+			if (strcmp(st->key, key) == 0) {
+				/* this key already set -> reset */
+				sfree(st->value);
+				st->value = snewn(strlen(value) + 1, char);
+				strcpy(st->value, value);
+				return;
+			}
+			st = st->next;
+		}
+
+		/* JK: key not found -> add to begin */
+		st = snew(struct settings_r);
+		st->key = snewn(strlen(key) + 1, char);
+		strcpy(st->key, key);
+		st->value = snewn(strlen(value) + 1, char);
+		strcpy(st->value, value);
+		st->next = handle->handle;
+
+		handle->handle = st;
+	}
+}
+
+
+
+void reg_write_setting_i(settings_w *handle, const char *key, int value)
 {
     if (handle)
         RegSetValueEx(handle->sesskey, key, 0, REG_DWORD,
 		      (CONST BYTE *) &value, sizeof(value));
 }
 
-void close_settings_w(settings_w *handle)
+
+/*
+ * File version of write_setting_i
+*/
+void file_write_setting_i(settings_w *handle, const char *key, int value)
+{
+	struct setItem *st;
+
+	if (handle) {
+		/* JK: counting max length of keys/values */
+		handle->fromFile = max(handle->fromFile, strlen(key) + 1);
+
+		st = handle->handle;
+
+		while (st) {
+			if (strcmp(st->key, key) == 0) {
+				/* this key already set -> reset */
+				sfree(st->value);
+				st->value = snewn(16, char);
+				_itoa(value, st->value, 10);
+				return;
+			}
+			st = st->next;
+		}
+
+		/* JK: key not found -> add to begin */
+		st = snew(struct settings_r);
+		st->key = snewn(strlen(key) + 1, char);
+		strcpy(st->key, key);
+		st->value = snewn(16, char);
+		_itoa(value, st->value, 10);
+		st->next = handle->handle;
+
+		handle->handle = st;
+	}
+}
+
+
+
+
+void reg_close_settings_w(settings_w *handle)
 {
     RegCloseKey(handle->sesskey);
     sfree(handle);
 }
 
-struct settings_r {
-    HKEY sesskey;
-};
+/*
+ * File version of close_settings_w
+ */
+void file_close_settings_w(settings_w *handle)
+{
+	HANDLE hFile;
+	DWORD written;
+	WIN32_FIND_DATA FindFile;
+	char *p;
+	struct setItem *st1, *st2;
+	int writeok;
 
-settings_r *open_settings_r(const char *sessionname)
+	if (!handle) return;
+
+	GetCurrentDirectory((MAX_PATH * 2), oldpath);
+
+	/* JK: we will write to disk now - open file, filename stored in handle already packed */
+	if ((hFile = FindFirstFile(sesspath, &FindFile)) == INVALID_HANDLE_VALUE) {
+		if (!createPath(sesspath)) {
+			errorShow("Unable to create directory for storing sessions", sesspath);
+			return;
+		}
+	}
+	FindClose(hFile);
+	SetCurrentDirectory(sesspath);
+
+	hFile = CreateFile(handle->fileBuf, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (hFile == INVALID_HANDLE_VALUE) {
+		errorShow("Unable to open file for writing", handle->fileBuf);
+		return;
+	}
+
+	/* JK: allocate enough memory for all keys/values */
+	p = snewn(max(3 * handle->fromFile, 16), char);
+
+	/* JK: process linked list */
+	st1 = handle->handle;
+	writeok = 1;
+
+	while (st1) {
+		mungestr(st1->key, p);
+		writeok = writeok && WriteFile((HANDLE)hFile, p, strlen(p), &written, NULL);
+		writeok = writeok && WriteFile((HANDLE)hFile, "\\", 1, &written, NULL);
+
+		mungestr(st1->value, p);
+		writeok = writeok && WriteFile((HANDLE)hFile, p, strlen(p), &written, NULL);
+		writeok = writeok && WriteFile((HANDLE)hFile, "\\\n", 2, &written, NULL);
+
+		if (!writeok) {
+			errorShow("Unable to save settings", st1->key);
+			return;
+			/* JK: memory should be freed here - fixme */
+		}
+
+		st2 = st1->next;
+		sfree(st1->key);
+		sfree(st1->value);
+		sfree(st1);
+		st1 = st2;
+	}
+
+	sfree(handle->fileBuf);
+	CloseHandle((HANDLE)hFile);
+	SetCurrentDirectory(oldpath);
+}
+
+
+settings_r *reg_open_settings_r(const char *sessionname)
 {
     HKEY subkey1, sesskey;
     strbuf *sb;
@@ -121,7 +391,165 @@ settings_r *open_settings_r(const char *sessionname)
     return toret;
 }
 
-char *read_setting_s(settings_r *handle, const char *key)
+/*
+ * File version of open_settings_r
+  */
+settings_r *file_open_settings_r(const char *sessionname)
+{
+	HKEY subkey1, sesskey;
+	char *p;
+	char *fileCont;
+	DWORD fileSize;
+	DWORD bytesRead;
+	HANDLE hFile;
+	struct settings_w* sp;
+	struct setItem *st1, *st2;
+
+	sp = snew(struct settings_w);
+
+	if (!sessionname || !*sessionname) {
+		sessionname = "Default Settings";
+	}
+
+	/* JK: in the first call of this function we initialize path variables */
+	if (*sesspath == '\0') {
+		loadPath();
+	}
+
+	/* JK: if sessionname contains [registry] -> cut it off in another buffer */
+	/*if ( *(sessionname+strlen(sessionname)-1) == ']') {
+		ses = snewn(strlen(sessionname)+1, char);
+		strcpy(ses, sessionname);
+
+		p = strrchr(ses, '[');
+		*(p-1) = '\0';
+
+		p = snewn(3 * strlen(ses) + 1, char);
+		mungestr(ses, p);
+		sfree(ses);
+
+		sp->fromFile = 0;
+	}
+	else {*/
+	p = snewn(3 * strlen(sessionname) + 1 + 16, char);
+	mungestr(sessionname, p);
+	strcat(p, sessionsuffix);
+
+	sp->fromFile = 1;
+	//}
+
+	/* JK: default settings must be read from registry */
+	/* 8.1.2007 - 0.1.6 try to load them from file if exists - nasty code duplication */
+	if (!strcmp(sessionname, "Default Settings")) {
+		GetCurrentDirectory((MAX_PATH * 2), oldpath);
+		if (SetCurrentDirectory(sesspath)) {
+			hFile = CreateFile(p, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+		}
+		else {
+			hFile = INVALID_HANDLE_VALUE;
+		}
+		SetCurrentDirectory(oldpath);
+
+		if (hFile == INVALID_HANDLE_VALUE) {
+			sp->fromFile = 0;
+		}
+		else {
+			sp->fromFile = 1;
+			CloseHandle(hFile);
+		}
+	}
+
+	if (sp->fromFile) {
+		/* JK: session is in file -> open dir/file */
+		GetCurrentDirectory((MAX_PATH * 2), oldpath);
+		if (SetCurrentDirectory(sesspath)) {
+			hFile = CreateFile(p, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+		}
+		else {
+			hFile = INVALID_HANDLE_VALUE;
+		}
+		SetCurrentDirectory(oldpath);
+
+		if (hFile == INVALID_HANDLE_VALUE) {
+			errorShow("Unable to read session from file", p);
+			sfree(p);
+			return NULL;
+		}
+
+		/* JK: succes -> load structure setPack from file */
+		fileSize = GetFileSize(hFile, NULL);
+		fileCont = snewn(fileSize + 16, char);
+
+		if (!ReadFile(hFile, fileCont, fileSize, &bytesRead, NULL)) {
+			errorShow("Unable to read session from file", p);
+			sfree(p);
+			return NULL;
+		}
+		sfree(p);
+
+		st1 = snew(struct settings_r);
+		sp->fromFile = 1;
+		sp->handle = st1;
+
+		p = fileCont;
+		sp->fileBuf = fileCont; /* JK: remeber for memory freeing */
+
+		/* pJK: arse file in format:
+		 * key1\value1\
+		 * ...
+		*/
+		while (p < (fileCont + fileSize)) {
+			st1->key = p;
+			p = strchr(p, '\\');
+			if (!p) break;
+			*p = '\0';
+			++p;
+			st1->value = p;
+			p = strchr(p, '\\');
+			if (!p) break;
+			*p = '\0';
+			++p;
+
+			// allow for someone having dos2unix'd our file
+			if (*p == '\r')
+				++p;
+
+			assert('\n' == *p);
+			++p; /* for "\\\n" - human readable files */
+
+			st2 = snew(struct settings_r);
+			st2->next = NULL;
+			st2->key = NULL;
+			st2->value = NULL;
+
+			st1->next = st2;
+			st1 = st2;
+		}
+		CloseHandle(hFile);
+	}
+	else {
+		/* JK: session is in registry */
+		if (RegOpenKey(HKEY_CURRENT_USER, puttystr, &subkey1) != ERROR_SUCCESS) {
+			sesskey = NULL;
+		}
+		else {
+			if (RegOpenKey(subkey1, p, &sesskey) != ERROR_SUCCESS) {
+				sesskey = NULL;
+			}
+			RegCloseKey(subkey1);
+		}
+		sp->fromFile = 0;
+		sp->handle = sesskey;
+		sfree(p);
+	}
+
+	return sp;
+}
+
+
+
+
+char *reg_read_setting_s(settings_r *handle, const char *key)
 {
     DWORD type, allocsize, size;
     char *ret;
@@ -150,7 +578,47 @@ char *read_setting_s(settings_r *handle, const char *key)
     return ret;
 }
 
-int read_setting_i(settings_r *handle, const char *key, int defvalue)
+
+char *file_read_setting_s(settings_r *handle, const char *key)
+{
+	struct setItem *st;
+	char *p;
+
+	if (!handle) return NULL;    /* JK: new in 0.1.3 */
+
+	if (handle->fromFile) {
+
+		p = snewn(3 * strlen(key) + 1, char);
+		mungestr(key, p);
+
+		st = handle->handle;
+		while (st->key) {
+			if (strcmp(st->key, p) == 0) {
+				const size_t buflen = 1024 * 16;
+				char *buffer = snewn(1024 * 16, char);
+				char *ret;
+				unmungestr(st->value, buffer, buflen);
+				ret = snewn(strlen(buffer) + 1, char);
+				strcpy(ret, buffer);
+				sfree(buffer);
+				return ret;
+			}
+			st = st->next;
+		}
+	}
+	else {
+		return reg_read_setting_s(handle->handle, key);
+	}
+	return NULL;
+}
+
+
+
+
+
+
+
+int reg_read_setting_i(settings_r *handle, const char *key, int defvalue)
 {
     DWORD type, val, size;
     size = sizeof(val);
@@ -163,6 +631,43 @@ int read_setting_i(settings_r *handle, const char *key, int defvalue)
     else
 	return val;
 }
+
+
+
+int file_read_setting_i(settings_r *handle, const char *key, int defvalue)
+{
+	DWORD type, val, size;
+	struct setItem *st;
+	size = sizeof(val);
+
+	if (!handle) return 0;    /* JK: new in 0.1.3 */
+
+	if (handle->fromFile) {
+		st = handle->handle;
+		while (st->key) {
+			if (strcmp(st->key, key) == 0) {
+				return atoi(st->value);
+			}
+			st = st->next;
+		}
+	}
+	else {
+		handle = handle->handle;
+
+		if (!handle || RegQueryValueEx((HKEY)handle, key, 0, &type, (BYTE *)&val, &size) != ERROR_SUCCESS || size != sizeof(val) || type != REG_DWORD) {
+			return defvalue;
+		}
+		else {
+			return val;
+		}
+	}
+	/* JK: should not end here -> value not found in file */
+	return defvalue;
+}
+
+
+
+
 
 FontSpec *read_setting_fontspec(settings_r *handle, const char *name)
 {
@@ -859,3 +1364,84 @@ void cleanup_all(void)
      * Now we're done.
      */
 }
+
+
+
+/* Putty File Macros for storage type switch */
+
+#define CONCAT(...) __VA_ARGS__
+
+#define STORAGE_TYPE_SWITCHER_FULL(has_return, return_t, method, types, calls) \
+return_t method(types) { \
+    if (storagetype == STORAGE_FILE) { \
+        has_return file_##method(calls); \
+    } else { \
+        has_return reg_##method(calls); \
+    } \
+}
+
+#define STORAGE_TYPE_SWITCHER(return_t, method, types, calls) \
+    STORAGE_TYPE_SWITCHER_FULL(return, return_t, method, types, calls)
+
+#define STORAGE_TYPE_SWITCHER_VOID(method, types, calls) \
+    STORAGE_TYPE_SWITCHER_FULL(      , void, method, types, calls)
+
+STORAGE_TYPE_SWITCHER(void *, open_settings_w,
+	CONCAT(const char *sessionname, char **errmsg),
+	CONCAT(sessionname, errmsg))
+
+STORAGE_TYPE_SWITCHER_VOID(write_setting_s,
+	CONCAT(void *handle, const char *key, const char *value),
+	CONCAT(handle, key, value))
+
+STORAGE_TYPE_SWITCHER_VOID(write_setting_i,
+	CONCAT(void *handle, const char *key, int value),
+	CONCAT(handle, key, value))
+
+STORAGE_TYPE_SWITCHER_VOID(close_settings_w,
+	CONCAT(void *handle),
+	CONCAT(handle))
+
+STORAGE_TYPE_SWITCHER(void *, open_settings_r,
+	CONCAT(const char *sessionname),
+	CONCAT(sessionname))
+
+STORAGE_TYPE_SWITCHER(char *, read_setting_s,
+	CONCAT(void *handle, const char *key),
+	CONCAT(handle, key))
+
+STORAGE_TYPE_SWITCHER(int, read_setting_i,
+	CONCAT(void *handle, const char *key, int defvalue),
+	CONCAT(handle, key, defvalue))
+
+STORAGE_TYPE_SWITCHER_VOID(close_settings_r,
+	CONCAT(void *handle),
+	CONCAT(handle))
+
+STORAGE_TYPE_SWITCHER_VOID(del_settings,
+	CONCAT(const char *sessionname),
+	CONCAT(sessionname))
+
+STORAGE_TYPE_SWITCHER(char*, enum_settings_next,
+	CONCAT(void *handle, char *buffer, int buflen),
+	CONCAT(handle, buffer, buflen))
+
+STORAGE_TYPE_SWITCHER_VOID(enum_settings_finish,
+	CONCAT(void *handle),
+	CONCAT(handle))
+
+STORAGE_TYPE_SWITCHER(int, verify_host_key,
+	CONCAT(const char *hostname, int port,
+		const char *keytype, const char *key),
+	CONCAT(hostname, port, keytype, key))
+
+STORAGE_TYPE_SWITCHER_VOID(store_host_key,
+	CONCAT(const char *hostname, int port,
+		const char *keytype, const char *key),
+	CONCAT(hostname, port, keytype, key))
+
+STORAGE_TYPE_SWITCHER(void *, enum_settings_start,
+	CONCAT(),
+	CONCAT())
+
+/* End */

@@ -319,6 +319,7 @@ void config_protocolbuttons_handler(union control *ctrl, dlgparam *dlg,
     }
 }
 
+
 static void loggingbuttons_handler(union control *ctrl, dlgparam *dlg,
 				   void *data, int event)
 {
@@ -639,6 +640,41 @@ struct sessionsaver_data {
     bool midsession;
     char *savedsession;     /* the current contents of ssd->editbox */
 };
+
+
+/*
+ * HACK: PuttyTray / PuTTY File
+ * Storagetype radio buttons event handler
+ */
+void storagetype_handler(union control *ctrl, void *dlg, void *data, int event)
+{
+	int button;
+	struct sessionsaver_data *ssd = (struct sessionsaver_data *)ctrl->generic.context.p;
+	Conf *conf = (Conf *)data;
+
+	/*
+	 * For a standard radio button set, the context parameter gives
+	 * offsetof(targetfield, Config), and the extra data per button
+	 * gives the value the target field should take if that button
+	 * is the one selected.
+	 */
+	if (event == EVENT_REFRESH) {
+		// Button index = same as storagetype number. Set according to config
+		button = get_storagetype();
+		dlg_radiobutton_set(ctrl, dlg, button);
+	}
+	else if (event == EVENT_VALCHANGE) {
+		button = dlg_radiobutton_get(ctrl, dlg);
+		set_storagetype(ctrl->radio.buttondata[button].i);
+
+		get_sesslist(&ssd->sesslist, false);
+		get_sesslist(&ssd->sesslist, true);
+		dlg_refresh(ssd->editbox, dlg);
+		dlg_refresh(ssd->listbox, dlg);
+	}
+}
+
+
 
 static void sessionsaver_data_free(void *ssdv)
 {
@@ -1603,6 +1639,16 @@ void setup_config_box(struct controlbox *b, bool midsession,
 	ssd->delbutton = NULL;
     }
     ctrl_columns(s, 1, 100);
+
+	/* Add the session storage radio control */
+	c = ctrl_radiobuttons(s, NULL, 'f', 2,
+		HELPCTX(no_help),
+		storagetype_handler,
+		P(ssd),
+		"Sessions from registry", I(STORAGE_REG),
+		"Sessions from file", I(STORAGE_FILE),
+		NULL);
+
 
     s = ctrl_getset(b, "Session", "otheropts", NULL);
     ctrl_radiobuttons(s, "Close window on exit:", 'x', 4,
