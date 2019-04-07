@@ -783,6 +783,11 @@ void save_open_settings(settings_w *sesskey, Conf *conf)
     write_setting_b(sesskey, "ConnectionSharingUpstream", conf_get_bool(conf, CONF_ssh_connection_sharing_upstream));
     write_setting_b(sesskey, "ConnectionSharingDownstream", conf_get_bool(conf, CONF_ssh_connection_sharing_downstream));
     wmap(sesskey, "SSHManualHostKeys", conf, CONF_ssh_manual_hostkeys, false);
+
+	/*
+	 * PuttyTray: Transparency
+	 */
+	write_setting_i(sesskey, "Transparency", conf_get_int(conf, CONF_transparency));
 }
 
 bool load_settings(const char *section, Conf *conf)
@@ -1255,6 +1260,11 @@ void load_open_settings(settings_r *sesskey, Conf *conf)
     gppb(sesskey, "ConnectionSharingDownstream", true,
          conf, CONF_ssh_connection_sharing_downstream);
     gppmap(sesskey, "SSHManualHostKeys", conf, CONF_ssh_manual_hostkeys);
+
+	/*
+	 * PuttyTray: Transparency
+	 */
+	gppi(sesskey, "Transparency", 255, conf, CONF_transparency);
 }
 
 bool do_defaults(const char *session, Conf *conf)

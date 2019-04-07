@@ -182,6 +182,16 @@ void win_setup_config_box(struct controlbox *b, HWND *hwndp, bool has_help,
 		  HELPCTX(appearance_border),
 		  conf_checkbox_handler, I(CONF_sunken_edge));
 
+	/*
+	 * PuttyTray: Transparency
+	 */
+	s = ctrl_getset(b, "Window/Appearance", "transparency",
+		"Adjust window transparency");
+	ctrl_text(s, "Can be adjusted with CTRL+SHFIT+Scroll", HELPCTX(no_help));
+	ctrl_editbox(s, "Window opacity (50-255)", 't', 30,
+		HELPCTX(no_help),
+		conf_editbox_handler, I(CONF_transparency), I(-1));
+
     /*
      * Configurable font quality settings for Windows.
      */
