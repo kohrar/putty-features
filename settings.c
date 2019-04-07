@@ -789,6 +789,9 @@ bool load_settings(const char *section, Conf *conf)
 {
     settings_r *sesskey;
 
+	// PuttyFile: Load session from files as default
+	set_storagetype(STORAGE_FILE);
+
     sesskey = open_settings_r(section);
     bool exists = (sesskey != NULL);
     load_open_settings(sesskey, conf);
