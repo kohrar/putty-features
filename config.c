@@ -1611,7 +1611,8 @@ void setup_config_box(struct controlbox *b, bool midsession,
 				HELPCTX(session_saved),
 				sessionsaver_handler, P(ssd));
     ssd->listbox->generic.column = 0;
-    ssd->listbox->listbox.height = 7;
+	// PuttyFile: More sessions in view; +5
+	ssd->listbox->listbox.height = 7 + 5;
     if (!midsession) {
 	ssd->loadbutton = ctrl_pushbutton(s, "Load", 'l',
 					  HELPCTX(session_saved),
@@ -1640,7 +1641,8 @@ void setup_config_box(struct controlbox *b, bool midsession,
     }
     ctrl_columns(s, 1, 100);
 
-	/* Add the session storage radio control */
+
+	/* PuttyFile: Add the session storage radio control */
 	c = ctrl_radiobuttons(s, NULL, 'f', 2,
 		HELPCTX(no_help),
 		storagetype_handler,
