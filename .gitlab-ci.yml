@@ -1,0 +1,22 @@
+
+variables:
+
+stages:
+  - Build
+
+before_script:
+  - call "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\Community\Common7\Tools\vsdevcmd"
+
+windows-build:
+  stage: Build
+  only:
+    - features
+  script:
+  - perl mkfiles.pl
+  - cd windows
+  - nmake Makefile.vc
+  artifacts:
+    paths:
+      - windows/putty.exe
+    expire_in: 1 week
+
