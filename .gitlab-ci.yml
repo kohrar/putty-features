@@ -6,6 +6,7 @@ stages:
 
 before_script:
   - call "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\Community\Common7\Tools\vsdevcmd"
+  - set
 
 windows-build:
   stage: Build
