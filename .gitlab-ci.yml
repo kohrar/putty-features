@@ -6,7 +6,6 @@ stages:
 
 before_script:
   - call "%ProgramFiles(x86)%\Microsoft Visual Studio\2019\Community\Common7\Tools\vsdevcmd"
-  - set
 
 windows-build:
   stage: Build
@@ -14,6 +13,9 @@ windows-build:
     - features
   script:
   - perl mkfiles.pl
+  - "echo #define SOURCE_COMMIT \"%CI_COMMIT_SHA%\" > version.h"
+  - "echo #define BINARY_VERSION 0,71,0,0 >> version.h"
+  - "echo #define TEXTVER \"PuTTY with Features 0.71\" >> version.h"
   - cd windows
   - nmake Makefile.vc
   artifacts:
