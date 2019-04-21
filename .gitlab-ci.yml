@@ -19,6 +19,7 @@ windows-build:
   - "echo #define SSHVER \"-Unidentified-Local-Build\" >> version.h"
   - cd windows
   - nmake Makefile.vc
+  - signtool sign /v /f C:\GitLab-Runner\private\putty-leoleung-spc.pfx /t http://timestamp.verisign.com/scripts/timstamp.dll windows\putty.exe
   artifacts:
     paths:
       - windows/putty.exe
