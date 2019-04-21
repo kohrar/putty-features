@@ -1454,7 +1454,7 @@ int file_verify_host_key(const char *hostname, int port,
 
 	// cd into session keys directory
 	if (SetCurrentDirectory(sshkpath)) {
-		// TODO: why 3x the name?
+		// 3x because packstr's worst case makes 1 char into 3 chars. +16 for keysuffix, +1 for \0
 		p = snewn(3 * regname->len + 1 + 16, char);
 		packstr(regname->s, p);
 		strcat(p, keysuffix);
@@ -1501,13 +1501,12 @@ int file_verify_host_key(const char *hostname, int port,
 	}
 
 	// otherwise, warn the user of the key in the registry.
-
 	p = snewn(256, char);
 	userMB = MessageBox(NULL, "The host key is cached in the Windows registry. "
 		"Do you want to move it to a file? \n\n"
 		"Yes \t-> Move to file (and delete from registry)\n"
 		"No \t-> Copy to file (and keep in registry)\n"
-		"Cancel \t-> nothing will be done\n", "Security risk", MB_YESNOCANCEL | MB_ICONWARNING);
+		"Cancel \t-> Do nothing and continue this session\n", "Security risk", MB_YESNOCANCEL | MB_ICONWARNING);
 
 	if ((userMB == IDYES) || (userMB == IDNO)) {
 		char oldDirectory[2048];
@@ -1520,8 +1519,8 @@ int file_verify_host_key(const char *hostname, int port,
 		FindClose(hFile);
 		SetCurrentDirectory(sshkpath);
 
-		p = snewn(3 * strlen(regname) + 1 + 16, char);
-		packstr(regname, p);
+		p = snewn(3 * regname->len + 1 + 16, char);
+		packstr(regname->s, p);
 		strcat(p, keysuffix);
 
 		hFile = CreateFile(p, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -1542,16 +1541,20 @@ int file_verify_host_key(const char *hostname, int port,
 	}
 	if (userMB == IDYES) {
 		/* delete from registry */
-		if (RegDeleteValue(rkey, regname) != ERROR_SUCCESS) {
-			errorShow("Unable to delete registry value", regname);
+		if (RegOpenKey(HKEY_CURRENT_USER, PUTTY_REG_POS "\\SshHostKeys", &rkey) == ERROR_SUCCESS) {
+			// Key exists, delete it
+			if (RegDeleteValue(rkey, regname->s) != ERROR_SUCCESS) {
+				errorShow("Unable to delete registry value", regname->s);
+			}
+
+			RegCloseKey(rkey);
 		}
 	}
 	/* JK: else (Cancel) -> nothing to be done right now */
 
-	RegCloseKey(rkey);
 
 	sfree(otherstr);
-	sfree(regname);
+	strbuf_free(regname);
 	return 0;
 
 }
