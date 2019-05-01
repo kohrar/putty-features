@@ -3475,10 +3475,41 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 				MakeWindowTransparent(hwnd, conf_get_int(conf, CONF_transparency));
 
 			} else {
+				/*
+				 * PuttyFeatures: Scroll Lines
+				 */
+				// if the wheel accumulator has multiples of the wheel delta, deal with it in one scroll call
+				// this will fix the laggy scrolling in original PuTTY.
+				int multiple = 1;
+				if (abs(wheel_accumulator) >= WHEEL_DELTA) {
+					multiple = abs(wheel_accumulator) / WHEEL_DELTA;
+
+					if (wheel_accumulator > 0) {
+						wheel_accumulator -= multiple * WHEEL_DELTA;
+					} else {
+						wheel_accumulator += multiple * WHEEL_DELTA;
+					}
+
+					// We started with a 1x already. Accounting for that here.
+					multiple++;
+					// to make scrolling more smooth, square the multiple value so that fast wheels scrolls more
+					multiple *= multiple;
+				}
+
+				// determine how much to scroll.
+				// -1 = half screen, -2 = full screen, and any positive value is the number of lines to scroll
+				int conf_scroll = conf_get_int(conf, CONF_scrolllines);
+				int scrollLines = conf_scroll == -1 ? term->rows / 2
+					: conf_scroll == -2 ? term->rows
+					: conf_scroll < -2 ? 3
+					: conf_scroll;
+				// account for the multiples from the wheel accumulator
+				scrollLines *= multiple;
+
 				/* trigger a scroll */
 				term_scroll(term, 0,
 					b == MBT_WHEEL_UP ?
-					-term->rows / 2 : term->rows / 2);
+					-scrollLines : scrollLines);
 			}
 		}
 	    }

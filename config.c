@@ -1917,6 +1917,17 @@ void setup_config_box(struct controlbox *b, bool midsession,
     ctrl_editbox(s, "Lines of scrollback", 's', 50,
 		 HELPCTX(window_scrollback),
 		 conf_editbox_handler, I(CONF_savelines), I(-1));
+
+	/*
+	 * PuttyFeatures: Scroll Lines
+	 */
+	ctrl_text(s, "Set the number of lines to scroll back per wheel turn."
+		"   Use  -1 for half screen,  -2 full screen",
+		HELPCTX(colours_config));
+	ctrl_editbox(s, "Lines scrolled per turn", 'l', 50,
+		HELPCTX(window_scrollback),
+		conf_editbox_handler, I(CONF_scrolllines), I(-1));
+
     ctrl_checkbox(s, "Display scrollbar", 'd',
 		  HELPCTX(window_scrollback),
 		  conf_checkbox_handler, I(CONF_scrollbar));

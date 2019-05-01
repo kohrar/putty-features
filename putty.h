@@ -1488,6 +1488,10 @@ NORETURN void cleanup_exit(int);
 	 * Options for PuttyTray
 	 */ \
 	X(INT, NONE, transparency) \
+	/*
+	 * Options for Scroll Lines per Wheel
+	 */ \
+	X(INT, NONE, scrolllines) \
 
     /* end of list */
 

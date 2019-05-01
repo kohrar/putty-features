@@ -788,6 +788,11 @@ void save_open_settings(settings_w *sesskey, Conf *conf)
 	 * PuttyTray: Transparency
 	 */
 	write_setting_i(sesskey, "Transparency", conf_get_int(conf, CONF_transparency));
+
+	/*
+	 * PuttyFeatures: Scroll Lines
+	 */
+	write_setting_i(sesskey, "LinesAtAScroll", conf_get_int(conf, CONF_scrolllines));
 }
 
 bool load_settings(const char *section, Conf *conf)
@@ -1265,6 +1270,11 @@ void load_open_settings(settings_r *sesskey, Conf *conf)
 	 * PuttyTray: Transparency
 	 */
 	gppi(sesskey, "Transparency", 255, conf, CONF_transparency);
+
+	/*
+	 * PuttyFeatures: Scroll Lines
+	 */
+	gppi(sesskey, "LinesAtAScroll", 5, conf, CONF_scrolllines);
 }
 
 bool do_defaults(const char *session, Conf *conf)
