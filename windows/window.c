@@ -385,6 +385,13 @@ static BOOL initialized = FALSE;
  * End of PuttyTray: Transparency
  */
 
+/*
+ * PuttyFeatures: No sleep
+ */
+void ModifyWindowThreadExecution(bool prevent_sleep);
+ /*
+  * End of PuttyFeatures: No sleep
+  */
 
 static void start_backend(void)
 {
@@ -922,6 +929,11 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 	if (conf_get_int(conf, CONF_transparency) >= 1 && conf_get_int(conf, CONF_transparency) < 255) {
 		MakeWindowTransparent(hwnd, conf_get_int(conf, CONF_transparency));
 	}
+
+	/*
+	 * PuttyFeatures: Prevent Sleep
+	 */
+	ModifyWindowThreadExecution(conf_get_bool(conf, CONF_prevent_sleep));
 
     while (1) {
 	HANDLE *handles;
@@ -2515,6 +2527,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 		    SetWindowText(hwnd,
 				  conf_get_bool(conf, CONF_win_name_always) ?
 				  window_name : icon_name);
+		}
+
+		/*
+		 * PuttyFeature: Prevent Sleep
+		 */
+		if (conf_get_int(conf, CONF_prevent_sleep) != conf_get_int(prev_conf, CONF_prevent_sleep)) {
+			ModifyWindowThreadExecution(conf_get_bool(conf, CONF_prevent_sleep));
 		}
 
 		{
@@ -5994,4 +6013,22 @@ bool MakeWindowTransparent(HWND hWnd, int factor)
 		SetWindowLong(hWnd, GWL_EXSTYLE, GetWindowLong(hWnd, GWL_EXSTYLE) & ~WS_EX_LAYERED);
 		return TRUE;
 	}
+}
+
+/*
+ * PuttyFeatures: Prevent Sleep
+ * Sets the thread execution state to prevent windows from sleeping. 
+ * See: https://docs.microsoft.com/en-us/windows/desktop/api/winbase/nf-winbase-setthreadexecutionstate
+ */
+void ModifyWindowThreadExecution(bool prevent_sleep) {
+	
+	// do not allow sleep
+	if (prevent_sleep) {
+		SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED);
+
+	// set back to allow sleep
+	} else {
+		SetThreadExecutionState(ES_CONTINUOUS);
+	}
+	
 }

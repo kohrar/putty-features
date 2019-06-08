@@ -793,6 +793,11 @@ void save_open_settings(settings_w *sesskey, Conf *conf)
 	 * PuttyFeatures: Scroll Lines
 	 */
 	write_setting_i(sesskey, "LinesAtAScroll", conf_get_int(conf, CONF_scrolllines));
+
+	/*
+	 * PuttyFeatures: Prevent Sleep
+	 */
+	write_setting_b(sesskey, "PreventSleep", conf_get_bool(conf, CONF_prevent_sleep));
 }
 
 bool load_settings(const char *section, Conf *conf)
@@ -1275,6 +1280,11 @@ void load_open_settings(settings_r *sesskey, Conf *conf)
 	 * PuttyFeatures: Scroll Lines
 	 */
 	gppi(sesskey, "LinesAtAScroll", 5, conf, CONF_scrolllines);
+
+	/*
+	 * PuttyFeatures: Prevent Sleep
+	 */
+	gppb(sesskey, "PreventSleep", false, conf, CONF_prevent_sleep);
 }
 
 bool do_defaults(const char *session, Conf *conf)

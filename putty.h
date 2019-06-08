@@ -1492,6 +1492,10 @@ NORETURN void cleanup_exit(int);
 	 * Options for Scroll Lines per Wheel
 	 */ \
 	X(INT, NONE, scrolllines) \
+	/*
+	 * Options for preventing sleep
+	 */ \
+	X(BOOL, NONE, prevent_sleep) \
 
     /* end of list */
 

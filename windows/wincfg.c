@@ -356,6 +356,14 @@ void win_setup_config_box(struct controlbox *b, HWND *hwndp, bool has_help,
 		  conf_checkbox_handler,
 		  I(CONF_fullscreenonaltenter));
 
+	/*
+	 * PuttyFeatures: Prevent sleep
+	 */
+	ctrl_checkbox(s, "Prevent Windows from sleeping", 'f',
+		HELPCTX(no_help),
+		conf_checkbox_handler,
+		I(CONF_prevent_sleep));
+
     /*
      * Windows supports a local-command proxy. This also means we
      * must adjust the text on the `Telnet command' control.
