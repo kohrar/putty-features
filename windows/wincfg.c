@@ -359,7 +359,7 @@ void win_setup_config_box(struct controlbox *b, HWND *hwndp, bool has_help,
 	/*
 	 * PuttyFeatures: Prevent sleep
 	 */
-	ctrl_checkbox(s, "Prevent Windows from sleeping", 'f',
+	ctrl_checkbox(s, "Prevent Windows from sleeping", 's',
 		HELPCTX(no_help),
 		conf_checkbox_handler,
 		I(CONF_prevent_sleep));
