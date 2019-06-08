@@ -235,10 +235,11 @@ RSAKey *auth_publickey_ssh1(
 }
 AuthKbdInt *auth_kbdint_prompts(AuthPolicy *ap, ptrlen username)
 {
-    AuthKbdInt *aki = snew(AuthKbdInt);
+    AuthKbdInt *aki;
 
     switch (ap->kbdint_state) {
       case 0:
+        aki = snew(AuthKbdInt);
         aki->title = dupstr("Initial double prompt");
         aki->instruction =
             dupstr("First prompt should echo, second should not");
@@ -250,6 +251,7 @@ AuthKbdInt *auth_kbdint_prompts(AuthPolicy *ap, ptrlen username)
         aki->prompts[1].echo = false;
         return aki;
       case 1:
+        aki = snew(AuthKbdInt);
         aki->title = dupstr("Zero-prompt step");
         aki->instruction = dupstr("Shouldn't see any prompts this time");
         aki->nprompts = 0;
@@ -819,9 +821,16 @@ int main(int argc, char **argv)
         scfg.listening_plug.vt = &server_plugvt;
         scfg.listening_socket = sk_newlistener(
             NULL, listen_port, &scfg.listening_plug, true, ADDRTYPE_UNSPEC);
+
+        char *msg = dupprintf("%s: listening on port %d",
+                              appname, listen_port);
+        log_to_stderr(-1, msg);
+        sfree(msg);
     } else {
-        Plug *plug = server_conn_plug(&scfg, NULL);
+        struct server_instance *inst;
+        Plug *plug = server_conn_plug(&scfg, &inst);
         ssh_server_start(plug, make_fd_socket(0, 1, -1, plug));
+        log_to_stderr(inst->id, "speaking SSH on stdio");
     }
 
     now = GETTICKCOUNT();
