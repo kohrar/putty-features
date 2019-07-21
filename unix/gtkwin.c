@@ -1932,8 +1932,7 @@ gint key_event(GtkWidget *widget, GdkEventKey *event, gpointer data)
 	     */
 	    output[end] = '\0';	       /* NUL-terminate */
             generated_something = true;
-	    if (inst->ldisc)
-		ldisc_send(inst->ldisc, output+start, -2, true);
+            term_keyinput(inst->term, -1, output+start, -2);
 	} else if (!inst->direct_to_font) {
 	    if (!use_ucsoutput) {
 #ifdef KEY_EVENT_DIAGNOSTICS
@@ -1952,9 +1951,8 @@ gint key_event(GtkWidget *widget, GdkEventKey *event, gpointer data)
                 sfree(string_string);
 #endif
                 generated_something = true;
-		if (inst->ldisc)
-		    lpage_send(inst->ldisc, output_charset, output+start,
-			       end-start, true);
+                term_keyinput(inst->term, output_charset,
+                              output+start, end-start);
 	    } else {
 #ifdef KEY_EVENT_DIAGNOSTICS
                 char *string_string = dupstr("");
@@ -1977,8 +1975,7 @@ gint key_event(GtkWidget *widget, GdkEventKey *event, gpointer data)
 		 * keysym, so use that instead.
 		 */
                 generated_something = true;
-		if (inst->ldisc)
-		    luni_send(inst->ldisc, ucsoutput+start, end-start, true);
+                term_keyinputw(inst->term, ucsoutput+start, end-start);
 	    }
 	} else {
 	    /*
@@ -2001,12 +1998,10 @@ gint key_event(GtkWidget *widget, GdkEventKey *event, gpointer data)
             sfree(string_string);
 #endif
             generated_something = true;
-	    if (inst->ldisc)
-		ldisc_send(inst->ldisc, output+start, end-start, true);
+            term_keyinput(inst->term, -1, output+start, end-start);
 	}
 
 	show_mouseptr(inst, false);
-	term_seen_key_event(inst->term);
     }
 
     if (generated_something)
@@ -2034,10 +2029,8 @@ void input_method_commit_event(GtkIMContext *imc, gchar *str, gpointer data)
     sfree(string_string);
 #endif
 
-    if (inst->ldisc)
-        lpage_send(inst->ldisc, CS_UTF8, str, strlen(str), true);
+    term_keyinput(inst->term, CS_UTF8, str, strlen(str));
     show_mouseptr(inst, false);
-    term_seen_key_event(inst->term);
     key_pressed(inst);
 }
 #endif
@@ -5092,11 +5085,10 @@ static void start_backend(GtkFrontend *inst)
                          conf_get_bool(inst->conf, CONF_tcp_keepalives));
 
     if (error) {
-	char *msg = dupprintf("Unable to open connection to %s:\n%s",
+	seat_connection_fatal(&inst->seat,
+                              "Unable to open connection to %s:\n%s",
 			      conf_dest(inst->conf), error);
 	inst->exited = true;
-	seat_connection_fatal(&inst->seat, msg);
-	sfree(msg);
         return;
     }
 
