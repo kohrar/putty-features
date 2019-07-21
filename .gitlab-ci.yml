@@ -18,7 +18,7 @@ windows-build:
   - "echo #define TEXTVER \"PuTTY Release 0.72 (%CI_COMMIT_REF_NAME% branch)\" >> version.h"
   - "echo #define SSHVER \"-Unidentified-Local-Build\" >> version.h"
   - cd windows
-  - nmake -f Makefile.vc BUILD=release
+  - nmake -f Makefile.vc putty.exe
   - signtool sign /v /f C:\GitLab-Runner\private\putty-leoleung-spc.pfx /fd sha256 /tr http://sha256timestamp.ws.symantec.com/sha256/timestamp /td sha256 putty.exe
   artifacts:
     paths:
