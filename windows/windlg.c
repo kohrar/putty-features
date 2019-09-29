@@ -367,7 +367,10 @@ static void create_controls(HWND hwnd, char *path)
         /*
          * Here we must create the basic standard controls.
          */
-        ctlposinit(&cp, hwnd, 3, 3, 235);
+        /*
+         * PuttyFile: Adjust for more sessions in view; +45
+         */
+        ctlposinit(&cp, hwnd, 3, 3, 235 + 45);
         wc = &ctrls_base;
         base_id = IDCX_STDBASE;
     } else {
@@ -454,7 +457,10 @@ static INT_PTR CALLBACK GenericMainDlgProc(HWND hwnd, UINT msg,
             r.left = 3;
             r.right = r.left + 95;
             r.top = 13;
-            r.bottom = r.top + 219;
+            /*
+             * PuttyFile: Adjust for more sessions in view ; +45
+             */
+            r.bottom = r.top + 219 + 45;
             MapDialogRect(hwnd, &r);
             treeview = CreateWindowEx(WS_EX_CLIENTEDGE, WC_TREEVIEW, "",
                                       WS_CHILD | WS_VISIBLE |
