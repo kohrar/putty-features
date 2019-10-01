@@ -14,8 +14,8 @@ windows-build:
   script:
   - perl mkfiles.pl
   - "echo #define SOURCE_COMMIT \"%CI_COMMIT_SHA%\" > version.h"
-  - "echo #define BINARY_VERSION 0,72,0,0 >> version.h"
-  - "echo #define TEXTVER \"PuTTY Release 0.72 (%CI_COMMIT_REF_NAME% branch)\" >> version.h"
+  - "echo #define BINARY_VERSION 0,73,0,0 >> version.h"
+  - "echo #define TEXTVER \"PuTTY Release 0.73 (%CI_COMMIT_REF_NAME% branch)\" >> version.h"
   - "echo #define SSHVER \"-Unidentified-Local-Build\" >> version.h"
   - cd windows
   - nmake -f Makefile.vc putty.exe
