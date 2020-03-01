@@ -19,7 +19,6 @@
 #include <time.h>
 #include <assert.h>
 
-#define PUTTY_DO_GLOBALS
 #include "putty.h"
 #include "psftp.h"
 #include "ssh.h"
@@ -43,8 +42,8 @@ static bool using_sftp = false;
 static bool uploading = false;
 
 static Backend *backend;
-Conf *conf;
-bool sent_eof = false;
+static Conf *conf;
+static bool sent_eof = false;
 
 static void source(const char *src);
 static void rsource(const char *src);
@@ -82,6 +81,8 @@ static const SeatVtable pscp_seat_vt = {
     nullseat_get_window_pixel_size,
     console_stripctrl_new,
     nullseat_set_trust_status_vacuously,
+    cmdline_seat_verbose,
+    nullseat_interactive_no,
 };
 static Seat pscp_seat[1] = {{ &pscp_seat_vt }};
 
@@ -113,24 +114,18 @@ static void abandon_stats(void)
     }
 }
 
-static void tell_user(FILE *stream, const char *fmt, ...)
+static PRINTF_LIKE(2, 3) void tell_user(FILE *stream, const char *fmt, ...)
 {
     char *str, *str2;
     va_list ap;
     va_start(ap, fmt);
     str = dupvprintf(fmt, ap);
     va_end(ap);
-    str2 = dupcat(str, "\n", NULL);
+    str2 = dupcat(str, "\n");
     sfree(str);
     abandon_stats();
     tell_str(stream, str2);
     sfree(str2);
-}
-
-void agent_schedule_callback(void (*callback)(void *, void *, int),
-                             void *callback_ctx, void *data, int len)
-{
-    unreachable("all PSCP agent requests should be synchronous");
 }
 
 /*
@@ -224,14 +219,14 @@ static void ssh_scp_init(void)
 /*
  *  Print an error message and exit after closing the SSH link.
  */
-static NORETURN void bump(const char *fmt, ...)
+static NORETURN PRINTF_LIKE(1, 2) void bump(const char *fmt, ...)
 {
     char *str, *str2;
     va_list ap;
     va_start(ap, fmt);
     str = dupvprintf(fmt, ap);
     va_end(ap);
-    str2 = dupcat(str, "\n", NULL);
+    str2 = dupcat(str, "\n");
     sfree(str);
     abandon_stats();
     tell_str(stderr, str2);
@@ -306,7 +301,7 @@ static void do_cmd(char *host, char *user, char *cmd)
      * If we haven't loaded session details already (e.g., from -load),
      * try looking for a session called "host".
      */
-    if (!loaded_session) {
+    if (!cmdline_loaded_session()) {
         /* Try to load settings for `host' into a temporary config */
         Conf *conf2 = conf_new();
         conf_set_str(conf2, CONF_host, "");
@@ -327,10 +322,12 @@ static void do_cmd(char *host, char *user, char *cmd)
     }
 
     /*
-     * Force use of SSH. (If they got the protocol wrong we assume the
-     * port is useless too.)
+     * Force protocol to SSH if the user has somehow contrived to
+     * select one we don't support (e.g. by loading an inappropriate
+     * saved session). In that situation we assume the port number is
+     * useless too.)
      */
-    if (conf_get_int(conf, CONF_protocol) != PROT_SSH) {
+    if (!backend_vt_from_proto(conf_get_int(conf, CONF_protocol))) {
         conf_set_int(conf, CONF_protocol, PROT_SSH);
         conf_set_int(conf, CONF_port, 22);
     }
@@ -450,11 +447,13 @@ static void do_cmd(char *host, char *user, char *cmd)
     }
     conf_set_bool(conf, CONF_nopty, true);
 
-    logctx = log_init(default_logpolicy, conf);
+    logctx = log_init(console_cli_logpolicy, conf);
 
-    platform_psftp_pre_conn_setup();
+    platform_psftp_pre_conn_setup(console_cli_logpolicy);
 
-    err = backend_init(&ssh_backend, pscp_seat, &backend, logctx, conf,
+    err = backend_init(backend_vt_from_proto(
+                           conf_get_int(conf, CONF_protocol)),
+                       pscp_seat, &backend, logctx, conf,
                        conf_get_str(conf, CONF_host),
                        conf_get_int(conf, CONF_port),
                        &realhost, 0,
@@ -762,7 +761,7 @@ int scp_send_filename(const char *name, uint64_t size, int permissions)
         struct fxp_attrs attrs;
 
         if (scp_sftp_targetisdir) {
-            fullname = dupcat(scp_sftp_remotepath, "/", name, NULL);
+            fullname = dupcat(scp_sftp_remotepath, "/", name);
         } else {
             fullname = dupstr(scp_sftp_remotepath);
         }
@@ -812,6 +811,15 @@ int scp_send_filedata(char *data, int len)
         }
 
         while (!xfer_upload_ready(scp_sftp_xfer)) {
+            if (toplevel_callback_pending()) {
+                /* If we have pending callbacks, they might make
+                 * xfer_upload_ready start to return true. So we should
+                 * run them and then re-check xfer_upload_ready, before
+                 * we go as far as waiting for an entire packet to
+                 * arrive. */
+                run_toplevel_callbacks();
+                continue;
+            }
             pktin = sftp_recv();
             ret = xfer_upload_gotpkt(scp_sftp_xfer, pktin);
             if (ret <= 0) {
@@ -917,7 +925,7 @@ int scp_send_dirname(const char *name, int modes)
         bool ret;
 
         if (scp_sftp_targetisdir) {
-            fullname = dupcat(scp_sftp_remotepath, "/", name, NULL);
+            fullname = dupcat(scp_sftp_remotepath, "/", name);
         } else {
             fullname = dupstr(scp_sftp_remotepath);
         }
@@ -1128,8 +1136,7 @@ int scp_get_sink_action(struct scp_sink_action *act)
             if (head->namepos < head->namelen) {
                 head->matched_something = true;
                 fname = dupcat(head->dirpath, "/",
-                               head->names[head->namepos++].filename,
-                               NULL);
+                               head->names[head->namepos++].filename);
                 must_free_fname = true;
             } else {
                 /*
@@ -1307,7 +1314,7 @@ int scp_get_sink_action(struct scp_sink_action *act)
                 act->action = SCP_SINK_RETRY;
             } else {
                 act->action = SCP_SINK_DIR;
-                act->buf->len = 0;
+                strbuf_clear(act->buf);
                 put_asciz(act->buf, stripslashes(fname, false));
                 act->name = act->buf->s;
                 act->size = 0;     /* duhh, it's a directory */
@@ -1327,7 +1334,7 @@ int scp_get_sink_action(struct scp_sink_action *act)
              * It's a file. Return SCP_SINK_FILE.
              */
             act->action = SCP_SINK_FILE;
-            act->buf->len = 0;
+            strbuf_clear(act->buf);
             put_asciz(act->buf, stripslashes(fname, false));
             act->name = act->buf->s;
             if (attrs.flags & SSH_FILEXFER_ATTR_SIZE) {
@@ -1355,7 +1362,7 @@ int scp_get_sink_action(struct scp_sink_action *act)
         char ch;
 
         act->settime = false;
-        act->buf->len = 0;
+        strbuf_clear(act->buf);
 
         while (!done) {
             if (!ssh_scp_recv(&ch, 1))
@@ -1388,7 +1395,7 @@ int scp_get_sink_action(struct scp_sink_action *act)
                            &act->mtime, &act->atime) == 2) {
                     act->settime = true;
                     backend_send(backend, "", 1);
-                    act->buf->len = 0;
+                    strbuf_clear(act->buf);
                     continue;          /* go round again */
                 }
                 bump("Protocol error: Illegal time format");
@@ -1542,14 +1549,14 @@ int scp_finish_filerecv(void)
  *  Send an error message to the other side and to the screen.
  *  Increment error counter.
  */
-static void run_err(const char *fmt, ...)
+static PRINTF_LIKE(1, 2) void run_err(const char *fmt, ...)
 {
     char *str, *str2;
     va_list ap;
     va_start(ap, fmt);
     errs++;
     str = dupvprintf(fmt, ap);
-    str2 = dupcat("pscp: ", str, "\n", NULL);
+    str2 = dupcat("pscp: ", str, "\n");
     sfree(str);
     scp_send_errmsg(str2);
     abandon_stats();
@@ -1697,7 +1704,7 @@ static void rsource(const char *src)
     if (dir != NULL) {
         char *filename;
         while ((filename = read_filename(dir)) != NULL) {
-            char *foundfile = dupcat(src, "/", filename, NULL);
+            char *foundfile = dupcat(src, "/", filename);
             source(foundfile);
             sfree(foundfile);
             sfree(filename);
@@ -1790,7 +1797,7 @@ static void sink(const char *targ, const char *src)
                     with_stripctrl(santarg, act.name) {
                         tell_user(stderr, "warning: remote host sent a"
                                   " compound pathname '%s'", sanname);
-                        tell_user(stderr, "         renaming local",
+                        tell_user(stderr, "         renaming local"
                                   " file to '%s'", santarg);
                     }
                 }
@@ -2223,6 +2230,8 @@ const bool share_can_be_upstream = false;
 static stdio_sink stderr_ss;
 static StripCtrlChars *stderr_scc;
 
+const unsigned cmdline_tooltype = TOOLTYPE_FILETRANSFER;
+
 /*
  * Main program. (Called `psftp_main' because it gets called from
  * *sftp.c; bit silly, I know, but it had to be called _something_.)
@@ -2232,20 +2241,13 @@ int psftp_main(int argc, char *argv[])
     int i;
     bool sanitise_stderr = true;
 
-    default_protocol = PROT_TELNET;
+    settings_set_default_protocol(PROT_SSH);
 
-    flags = 0
-#ifdef FLAG_SYNCAGENT
-        | FLAG_SYNCAGENT
-#endif
-        ;
-    cmdline_tooltype = TOOLTYPE_FILETRANSFER;
     sk_init();
 
     /* Load Default Settings before doing anything else. */
     conf = conf_new();
     do_defaults(NULL, conf);
-    loaded_session = false;
 
     for (i = 1; i < argc; i++) {
         int ret;
@@ -2258,7 +2260,7 @@ int psftp_main(int argc, char *argv[])
             i++;               /* skip next argument */
         } else if (ret == 1) {
             /* We have our own verbosity in addition to `flags'. */
-            if (flags & FLAG_VERBOSE)
+            if (cmdline_verbose())
                 verbose = true;
         } else if (strcmp(argv[i], "-pgpfp") == 0) {
             pgp_fingerprints();

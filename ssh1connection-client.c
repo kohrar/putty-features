@@ -161,8 +161,30 @@ bool ssh1_handle_direction_specific_packet(
             c->connlayer = s;
             ssh1_channel_init(c);
             c->remoteid = remid;
-            c->chan = agentf_new(&c->sc);
             c->halfopen = false;
+
+            /*
+             * If possible, make a stream-oriented connection to the
+             * agent and set up an ordinary port-forwarding type
+             * channel over it.
+             */
+            Plug *plug;
+            Channel *ch = portfwd_raw_new(&s->cl, &plug, true);
+            Socket *skt = agent_connect(plug);
+            if (!sk_socket_error(skt)) {
+                portfwd_raw_setup(ch, skt, &c->sc);
+                c->chan = ch;
+            } else {
+                portfwd_raw_free(ch);
+
+                /*
+                 * Otherwise, fall back to the old-fashioned system of
+                 * parsing the forwarded data stream ourselves for
+                 * message boundaries, and passing each individual
+                 * message to the one-off agent_query().
+                 */
+                c->chan = agentf_new(&c->sc);
+            }
 
             pktout = ssh_bpp_new_pktout(
                 s->ppl.bpp, SSH1_MSG_CHANNEL_OPEN_CONFIRMATION);
@@ -240,15 +262,14 @@ bool ssh1_handle_direction_specific_packet(
 
         return true;
 
-      case SSH1_SMSG_EXIT_STATUS:
-        {
-            int exitcode = get_uint32(pktin);
-            ppl_logevent("Server sent command exit status %d", exitcode);
-            ssh_got_exitcode(s->ppl.ssh, exitcode);
+      case SSH1_SMSG_EXIT_STATUS: {
+        int exitcode = get_uint32(pktin);
+        ppl_logevent("Server sent command exit status %d", exitcode);
+        ssh_got_exitcode(s->ppl.ssh, exitcode);
 
-            s->session_terminated = true;
-        }
+        s->session_terminated = true;
         return true;
+      }
 
       default:
         return false;

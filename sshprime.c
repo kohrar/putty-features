@@ -5,6 +5,8 @@
 #include <assert.h>
 #include "ssh.h"
 #include "mpint.h"
+#include "mpunsafe.h"
+#include "sshkeygen.h"
 
 /*
  * This prime generation algorithm is pretty much cribbed from
@@ -107,51 +109,6 @@
  * but 1s.)
  */
 
-static unsigned short primes[6542]; /* # primes < 65536 */
-#define NPRIMES (lenof(primes))
-
-static void init_primes_array(void)
-{
-    if (primes[0])
-        return;                        /* already done */
-
-    bool A[65536];
-
-    for (size_t i = 2; i < lenof(A); i++)
-        A[i] = true;
-
-    for (size_t i = 2; i < lenof(A); i++) {
-        if (!A[i])
-            continue;
-        for (size_t j = 2*i; j < lenof(A); j += i)
-            A[j] = false;
-    }
-
-    size_t pos = 0;
-    for (size_t i = 2; i < lenof(A); i++)
-        if (A[i])
-            primes[pos++] = i;
-
-    assert(pos == NPRIMES);
-}
-
-static unsigned short mp_mod_short(mp_int *x, unsigned short modulus)
-{
-    /*
-     * This function lives here rather than in mpint.c partly because
-     * this is the only place it's needed, but mostly because it
-     * doesn't pay careful attention to constant running time, since
-     * as far as I can tell that's a lost cause for key generation
-     * anyway.
-     */
-    unsigned accumulator = 0;
-    for (size_t i = mp_max_bytes(x); i-- > 0 ;) {
-        accumulator = 0x100 * accumulator + mp_get_byte(x, i);
-        accumulator %= modulus;
-    }
-    return accumulator;
-}
-
 /*
  * Generate a prime. We can deal with various extra properties of
  * the prime:
@@ -176,106 +133,24 @@ mp_int *primegen(
     int bits, int modulus, int residue, mp_int *factor,
     int phase, progfn_t pfn, void *pfnparam, unsigned firstbits)
 {
-    init_primes_array();
-
     int progress = 0;
 
     size_t fbsize = 0;
     while (firstbits >> fbsize)        /* work out how to align this */
         fbsize++;
 
+    PrimeCandidateSource *pcs = pcs_new(bits, firstbits, fbsize);
+    if (factor)
+        pcs_require_residue_1(pcs, factor);
+    if (modulus)
+        pcs_avoid_residue_small(pcs, modulus, residue);
+    pcs_ready(pcs);
+
   STARTOVER:
 
     pfn(pfnparam, PROGFN_PROGRESS, phase, ++progress);
 
-    /*
-     * Generate a k-bit random number with top and bottom bits set.
-     * Alternatively, if `factor' is nonzero, generate a k-bit
-     * random number with the top bit set and the bottom bit clear,
-     * multiply it by `factor', and add one.
-     */
-    mp_int *p = mp_power_2(bits - 1);  /* ensure top bit is 1 */
-    mp_int *r = mp_random_bits(bits - 1);
-    mp_or_into(p, p, r);
-    mp_free(r);
-    mp_set_bit(p, 0, factor ? 0 : 1);  /* set bottom bit appropriately */
-
-    for (size_t i = 0; i < fbsize; i++)
-        mp_set_bit(p, bits-fbsize + i, 1 & (firstbits >> i));
-
-    if (factor) {
-        mp_int *tmp = p;
-        p = mp_mul(tmp, factor);
-        mp_free(tmp);
-        assert(mp_get_bit(p, 0) == 0);
-        mp_set_bit(p, 0, 1);
-    }
-
-    /*
-     * We need to ensure this random number is coprime to the first
-     * few primes, by repeatedly adding either 2 or 2*factor to it
-     * until it is. To do this we make a list of (modulus, residue)
-     * pairs to avoid, and we also add to that list the extra pair our
-     * caller wants to avoid.
-     */
-
-    /* List the moduli */
-    unsigned long moduli[NPRIMES + 1];
-    for (size_t i = 0; i < NPRIMES; i++)
-        moduli[i] = primes[i];
-    moduli[NPRIMES] = modulus;
-
-    /* Find the residue of our starting number mod each of them. Also
-     * set up the multipliers array which tells us how each one will
-     * change when we increment the number (which isn't just 1 if
-     * we're incrementing by multiples of factor). */
-    unsigned long residues[NPRIMES + 1], multipliers[NPRIMES + 1];
-    for (size_t i = 0; i < lenof(moduli); i++) {
-        residues[i] = mp_mod_short(p, moduli[i]);
-        if (factor)
-            multipliers[i] = mp_mod_short(factor, moduli[i]);
-        else
-            multipliers[i] = 1;
-    }
-
-    /* Adjust the last entry so that it avoids a residue other than zero */
-    residues[NPRIMES] = (residues[NPRIMES] + modulus - residue) % modulus;
-
-    /*
-     * Now loop until no residue in that list is zero, to find a
-     * sensible increment. We maintain the increment in an ordinary
-     * integer, so if it gets too big, we'll have to give up and go
-     * back to making up a fresh random large integer.
-     */
-    unsigned delta = 0;
-    while (1) {
-        for (size_t i = 0; i < lenof(moduli); i++)
-            if (!((residues[i] + delta * multipliers[i]) % moduli[i]))
-                goto found_a_zero;
-
-        /* If we didn't exit that loop by goto, we've got our candidate. */
-        break;
-
-      found_a_zero:
-        delta += 2;
-        if (delta > 65536) {
-            mp_free(p);
-            goto STARTOVER;
-        }
-    }
-
-    /*
-     * Having found a plausible increment, actually add it on.
-     */
-    if (factor) {
-        mp_int *d = mp_from_integer(delta);
-        mp_int *df = mp_mul(d, factor);
-        mp_add_into(p, p, df);
-        mp_free(d);
-        mp_free(df);
-    } else {
-        mp_add_integer_into(p, p, delta);
-    }
+    mp_int *p = pcs_generate(pcs);
 
     /*
      * Now apply the Miller-Rabin primality test a few times. First
@@ -362,116 +237,6 @@ mp_int *primegen(
     /*
      * We have a prime!
      */
+    pcs_free(pcs);
     return p;
-}
-
-/*
- * Invent a pair of values suitable for use as 'firstbits' in the
- * above function, such that their product is at least 2, and such
- * that their difference is also at least min_separation.
- *
- * This is used for generating both RSA and DSA keys which have
- * exactly the specified number of bits rather than one fewer - if you
- * generate an a-bit and a b-bit number completely at random and
- * multiply them together, you could end up with either an (ab-1)-bit
- * number or an (ab)-bit number. The former happens log(2)*2-1 of the
- * time (about 39%) and, though actually harmless, every time it
- * occurs it has a non-zero probability of sparking a user email along
- * the lines of 'Hey, I asked PuTTYgen for a 2048-bit key and I only
- * got 2047 bits! Bug!'
- */
-static inline unsigned firstbits_b_min(
-    unsigned a, unsigned lo, unsigned hi, unsigned min_separation)
-{
-    /* To get a large enough product, b must be at least this much */
-    unsigned b_min = (2*lo*lo + a - 1) / a;
-    /* Now enforce a<b, optionally with minimum separation */
-    if (b_min < a + min_separation)
-        b_min = a + min_separation;
-    /* And cap at the upper limit */
-    if (b_min > hi)
-        b_min = hi;
-    return b_min;
-}
-
-void invent_firstbits(unsigned *one, unsigned *two, unsigned min_separation)
-{
-    /*
-     * We'll pick 12 initial bits (number selected at random) for each
-     * prime, not counting the leading 1. So we want to return two
-     * values in the range [2^12,2^13) whose product is at least 2^25.
-     *
-     * Strategy: count up all the viable pairs, then select a random
-     * number in that range and use it to pick a pair.
-     *
-     * To keep things simple, we'll ensure a < b, and randomly swap
-     * them at the end.
-     */
-    const unsigned lo = 1<<12, hi = 1<<13, minproduct = 2*lo*lo;
-    unsigned a, b;
-
-    /*
-     * Count up the number of prefixes of b that would be valid for
-     * each prefix of a.
-     */
-    mp_int *total = mp_new(32);
-    for (a = lo; a < hi; a++) {
-        unsigned b_min = firstbits_b_min(a, lo, hi, min_separation);
-        mp_add_integer_into(total, total, hi - b_min);
-    }
-
-    /*
-     * Make up a random number in the range [0,2*total).
-     */
-    mp_int *mlo = mp_from_integer(0), *mhi = mp_new(32);
-    mp_lshift_fixed_into(mhi, total, 1);
-    mp_int *randval = mp_random_in_range(mlo, mhi);
-    mp_free(mlo);
-    mp_free(mhi);
-
-    /*
-     * Use the low bit of randval as our swap indicator, leaving the
-     * rest of it in the range [0,total).
-     */
-    unsigned swap = mp_get_bit(randval, 0);
-    mp_rshift_fixed_into(randval, randval, 1);
-
-    /*
-     * Now do the same counting loop again to make the actual choice.
-     */
-    a = b = 0;
-    for (unsigned a_candidate = lo; a_candidate < hi; a_candidate++) {
-        unsigned b_min = firstbits_b_min(a_candidate, lo, hi, min_separation);
-        unsigned limit = hi - b_min;
-
-        unsigned b_candidate = b_min + mp_get_integer(randval);
-        unsigned use_it = 1 ^ mp_hs_integer(randval, limit);
-        a ^= (a ^ a_candidate) & -use_it;
-        b ^= (b ^ b_candidate) & -use_it;
-
-        mp_sub_integer_into(randval, randval, limit);
-    }
-
-    mp_free(randval);
-    mp_free(total);
-
-    /*
-     * Check everything came out right.
-     */
-    assert(lo <= a);
-    assert(a < hi);
-    assert(lo <= b);
-    assert(b < hi);
-    assert(a * b >= minproduct);
-    assert(b >= a + min_separation);
-
-    /*
-     * Last-minute optional swap of a and b.
-     */
-    unsigned diff = (a ^ b) & (-swap);
-    a ^= diff;
-    b ^= diff;
-
-    *one = a;
-    *two = b;
 }

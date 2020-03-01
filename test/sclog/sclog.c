@@ -388,10 +388,10 @@ static dr_emit_flags_t instrument_instr(
     if (instr_reads_memory(instr) || instr_writes_memory(instr)) {
         for (int i = 0, limit = instr_num_srcs(instr); i < limit; i++)
             try_mem_opnd(drcontext, bb, instr, &loc,
-                         instr_get_src(instr, i), false);
+                         instr_get_src(instr, i), instr_writes_memory(instr));
         for (int i = 0, limit = instr_num_dsts(instr); i < limit; i++)
             try_mem_opnd(drcontext, bb, instr, &loc,
-                         instr_get_dst(instr, i), false);
+                         instr_get_dst(instr, i), instr_writes_memory(instr));
     }
 
     /*
@@ -422,30 +422,29 @@ static dr_emit_flags_t instrument_instr(
       case OP_rol:
       case OP_ror:
       case OP_rcl:
-      case OP_rcr:
+      case OP_rcr: {
         /*
          * Shift instructions. If they're register-controlled, log the
          * shift count.
          */
-        {
-            opnd_t shiftcount = instr_get_src(instr, 0);
-            if (!opnd_is_immed(shiftcount)) {
-                reg_id_t r0;
-                drreg_status_t st;
-                st = drreg_reserve_register(drcontext, bb, instr, NULL, &r0);
-                DR_ASSERT(st == DRREG_SUCCESS);
-                opnd_t op_r0 = opnd_create_reg(r0);
-                instrlist_preinsert(bb, instr, INSTR_CREATE_movzx(
-                                        drcontext, op_r0, shiftcount));
-                instr_format_location(instr, &loc);
-                dr_insert_clean_call(
-                    drcontext, bb, instr, (void *)log_var_shift, false,
-                    2, op_r0, OPND_CREATE_INTPTR(loc));
-                st = drreg_unreserve_register(drcontext, bb, instr, r0);
-                DR_ASSERT(st == DRREG_SUCCESS);
-            }
+        opnd_t shiftcount = instr_get_src(instr, 0);
+        if (!opnd_is_immed(shiftcount)) {
+          reg_id_t r0;
+          drreg_status_t st;
+          st = drreg_reserve_register(drcontext, bb, instr, NULL, &r0);
+          DR_ASSERT(st == DRREG_SUCCESS);
+          opnd_t op_r0 = opnd_create_reg(r0);
+          instrlist_preinsert(bb, instr, INSTR_CREATE_movzx(
+                                  drcontext, op_r0, shiftcount));
+          instr_format_location(instr, &loc);
+          dr_insert_clean_call(
+              drcontext, bb, instr, (void *)log_var_shift, false,
+              2, op_r0, OPND_CREATE_INTPTR(loc));
+          st = drreg_unreserve_register(drcontext, bb, instr, r0);
+          DR_ASSERT(st == DRREG_SUCCESS);
         }
         break;
+      }
     }
 
     return DR_EMIT_DEFAULT;
@@ -539,9 +538,12 @@ static void load_module(
          * need to add more aliases here to stop the test failing.
          */
         TRY_WRAP("__GI___libc_malloc", wrap_malloc_pre, wrap_alloc_post);
+        TRY_WRAP("__libc_malloc", wrap_malloc_pre, wrap_alloc_post);
         TRY_WRAP("__GI___libc_realloc", wrap_realloc_pre, wrap_alloc_post);
         TRY_WRAP("__GI___libc_free", wrap_free_pre, unpause_post);
         TRY_WRAP("__memset_sse2_unaligned", wrap_memset_pre, unpause_post);
+        TRY_WRAP("__memset_sse2", wrap_memset_pre, unpause_post);
+        TRY_WRAP("cfree", wrap_free_pre, unpause_post);
     }
 }
 

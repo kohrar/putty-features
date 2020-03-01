@@ -69,6 +69,10 @@ const char *const ttymodes[] = {
     "CS7",      "CS8",      "PARENB",   "PARODD",   NULL
 };
 
+static int default_protocol, default_port;
+void settings_set_default_protocol(int newval) { default_protocol = newval; }
+void settings_set_default_port(int newval) { default_port = newval; }
+
 /*
  * Convenience functions to access the backends[] array
  * (which is only present in tools that manage settings).
@@ -78,7 +82,7 @@ const struct BackendVtable *backend_vt_from_name(const char *name)
 {
     const struct BackendVtable *const *p;
     for (p = backends; *p != NULL; p++)
-        if (!strcmp((*p)->name, name))
+        if (!strcmp((*p)->id, name))
             return *p;
     return NULL;
 }
@@ -488,14 +492,12 @@ static void write_clip_setting(settings_w *sesskey, const char *savekey,
       case CLIPUI_EXPLICIT:
         write_setting_s(sesskey, savekey, "explicit");
         break;
-      case CLIPUI_CUSTOM:
-        {
-            char *sval = dupcat("custom:", conf_get_str(conf, strconfkey),
-                                (const char *)NULL);
-            write_setting_s(sesskey, savekey, sval);
-            sfree(sval);
-        }
+      case CLIPUI_CUSTOM: {
+        char *sval = dupcat("custom:", conf_get_str(conf, strconfkey));
+        write_setting_s(sesskey, savekey, sval);
+        sfree(sval);
         break;
+      }
     }
 }
 
@@ -554,7 +556,7 @@ void save_open_settings(settings_w *sesskey, Conf *conf)
         const struct BackendVtable *vt =
             backend_vt_from_proto(conf_get_int(conf, CONF_protocol));
         if (vt)
-            p = vt->name;
+            p = vt->id;
     }
     write_setting_s(sesskey, "Protocol", p);
     write_setting_i(sesskey, "PortNumber", conf_get_int(conf, CONF_port));

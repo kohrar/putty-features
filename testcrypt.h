@@ -48,12 +48,15 @@ FUNC4(void, mp_cond_add_into, val_mpint, val_mpint, val_mpint, uint)
 FUNC4(void, mp_cond_sub_into, val_mpint, val_mpint, val_mpint, uint)
 FUNC3(void, mp_cond_swap, val_mpint, val_mpint, uint)
 FUNC2(void, mp_cond_clear, val_mpint, uint)
-FUNC4(void, mp_divmod_into, val_mpint, val_mpint, val_mpint, val_mpint)
+FUNC4(void, mp_divmod_into, val_mpint, val_mpint, opt_val_mpint, opt_val_mpint)
 FUNC2(val_mpint, mp_div, val_mpint, val_mpint)
 FUNC2(val_mpint, mp_mod, val_mpint, val_mpint)
 FUNC2(void, mp_reduce_mod_2to, val_mpint, uint)
 FUNC2(val_mpint, mp_invert_mod_2to, val_mpint, uint)
 FUNC2(val_mpint, mp_invert, val_mpint, val_mpint)
+FUNC5(void, mp_gcd_into, val_mpint, val_mpint, opt_val_mpint, opt_val_mpint, opt_val_mpint)
+FUNC2(val_mpint, mp_gcd, val_mpint, val_mpint)
+FUNC2(uint, mp_coprime, val_mpint, val_mpint)
 FUNC2(val_modsqrt, modsqrt_new, val_mpint, val_mpint)
 /* The modsqrt functions' 'success' pointer becomes a second return value */
 FUNC3(val_mpint, mp_modsqrt, val_modsqrt, val_mpint, out_uint)
@@ -75,6 +78,8 @@ FUNC3(val_mpint, mp_modpow, val_mpint, val_mpint, val_mpint)
 FUNC3(val_mpint, mp_modmul, val_mpint, val_mpint, val_mpint)
 FUNC3(val_mpint, mp_modadd, val_mpint, val_mpint, val_mpint)
 FUNC3(val_mpint, mp_modsub, val_mpint, val_mpint, val_mpint)
+FUNC3(void, mp_lshift_safe_into, val_mpint, val_mpint, uint)
+FUNC3(void, mp_rshift_safe_into, val_mpint, val_mpint, uint)
 FUNC2(val_mpint, mp_rshift_safe, val_mpint, uint)
 FUNC3(void, mp_lshift_fixed_into, val_mpint, val_mpint, uint)
 FUNC3(void, mp_rshift_fixed_into, val_mpint, val_mpint, uint)
@@ -105,6 +110,7 @@ FUNC3(val_mpoint, ecc_montgomery_diff_add, val_mpoint, val_mpoint, val_mpoint)
 FUNC1(val_mpoint, ecc_montgomery_double, val_mpoint)
 FUNC2(val_mpoint, ecc_montgomery_multiply, val_mpoint, val_mpint)
 FUNC2(void, ecc_montgomery_get_affine, val_mpoint, out_val_mpint)
+FUNC1(boolean, ecc_montgomery_is_identity, val_mpoint)
 FUNC4(val_ecurve, ecc_edwards_curve, val_mpint, val_mpint, val_mpint, opt_val_mpint)
 FUNC3(val_epoint, ecc_edwards_point_new, val_ecurve, val_mpint, val_mpint)
 FUNC3(val_epoint, ecc_edwards_point_new_from_y, val_ecurve, val_mpint, uint)
@@ -122,7 +128,9 @@ FUNC3(void, ecc_edwards_get_affine, val_epoint, out_val_mpint, out_val_mpint)
  * API by the hash object also functioning as a BinarySink.
  */
 FUNC1(opt_val_hash, ssh_hash_new, hashalg)
+FUNC1(void, ssh_hash_reset, val_hash)
 FUNC1(val_hash, ssh_hash_copy, val_hash)
+FUNC1(val_string, ssh_hash_digest, val_hash)
 FUNC1(val_string, ssh_hash_final, consumed_val_hash)
 FUNC2(void, ssh_hash_update, val_hash, val_string_ptrlen)
 
@@ -136,6 +144,7 @@ FUNC2(void, ssh2_mac_setkey, val_mac, val_string_ptrlen)
 FUNC1(void, ssh2_mac_start, val_mac)
 FUNC2(void, ssh2_mac_update, val_mac, val_string_ptrlen)
 FUNC1(val_string, ssh2_mac_genresult, val_mac)
+FUNC1(val_string_asciz_const, ssh2_mac_text_name, val_mac)
 
 /*
  * The ssh_key abstraction. All the uses of BinarySink and
@@ -154,7 +163,16 @@ FUNC2(void, ssh_key_public_blob, val_key, out_val_string_binarysink)
 FUNC2(void, ssh_key_private_blob, val_key, out_val_string_binarysink)
 FUNC2(void, ssh_key_openssh_blob, val_key, out_val_string_binarysink)
 FUNC1(val_string_asciz, ssh_key_cache_str, val_key)
+FUNC1(val_keycomponents, ssh_key_components, val_key)
 FUNC2(uint, ssh_key_public_bits, keyalg, val_string_ptrlen)
+
+/*
+ * Accessors to retrieve the innards of a 'key_components'.
+ */
+FUNC1(uint, key_components_count, val_keycomponents)
+FUNC2(opt_val_string_asciz_const, key_components_nth_name, val_keycomponents, uint)
+FUNC2(opt_val_string_asciz_const, key_components_nth_str, val_keycomponents, uint)
+FUNC2(opt_val_mpint, key_components_nth_mp, val_keycomponents, uint)
 
 /*
  * The ssh_cipher abstraction. The in-place encrypt and decrypt
@@ -184,15 +202,18 @@ FUNC2(val_mpint, dh_find_K, val_dh, val_mpint)
  */
 FUNC1(val_ecdh, ssh_ecdhkex_newkey, ecdh_alg)
 FUNC2(void, ssh_ecdhkex_getpublic, val_ecdh, out_val_string_binarysink)
-FUNC2(val_mpint, ssh_ecdhkex_getkey, val_ecdh, val_string_ptrlen)
+FUNC2(opt_val_mpint, ssh_ecdhkex_getkey, val_ecdh, val_string_ptrlen)
 
 /*
- * RSA key exchange.
+ * RSA key exchange, and also the BinarySource get function
+ * get_ssh1_rsa_priv_agent, which is a convenient way to make an
+ * RSAKey for RSA kex testing purposes.
  */
 FUNC1(val_rsakex, ssh_rsakex_newkey, val_string_ptrlen)
 FUNC1(uint, ssh_rsakex_klen, val_rsakex)
 FUNC3(val_string, ssh_rsakex_encrypt, val_rsakex, hashalg, val_string_ptrlen)
-FUNC3(val_mpint, ssh_rsakex_decrypt, val_rsakex, hashalg, val_string_ptrlen)
+FUNC3(opt_val_mpint, ssh_rsakex_decrypt, val_rsakex, hashalg, val_string_ptrlen)
+FUNC1(val_rsakex, get_rsa_ssh1_priv_agent, val_string_binarysource)
 
 /*
  * Bare RSA keys as used in SSH-1. The construction API functions
@@ -202,13 +223,14 @@ FUNC3(val_mpint, ssh_rsakex_decrypt, val_rsakex, hashalg, val_string_ptrlen)
 FUNC0(val_rsa, rsa_new)
 FUNC3(void, get_rsa_ssh1_pub, val_string_binarysource, val_rsa, rsaorder)
 FUNC2(void, get_rsa_ssh1_priv, val_string_binarysource, val_rsa)
-FUNC2(val_string, rsa_ssh1_encrypt, val_string_ptrlen, val_rsa)
+FUNC2(opt_val_string, rsa_ssh1_encrypt, val_string_ptrlen, val_rsa)
 FUNC2(val_mpint, rsa_ssh1_decrypt, val_mpint, val_rsa)
 FUNC2(val_string, rsa_ssh1_decrypt_pkcs1, val_mpint, val_rsa)
 FUNC1(val_string_asciz, rsastr_fmt, val_rsa)
 FUNC1(val_string_asciz, rsa_ssh1_fingerprint, val_rsa)
 FUNC3(void, rsa_ssh1_public_blob, out_val_string_binarysink, val_rsa, rsaorder)
 FUNC1(int, rsa_ssh1_public_blob_len, val_string_ptrlen)
+FUNC2(void, rsa_ssh1_private_blob_agent, out_val_string_binarysink, val_rsa)
 
 /*
  * The PRNG type. Similarly to hashes and MACs, I've invented an extra
@@ -221,6 +243,36 @@ FUNC2(void, prng_seed_update, val_prng, val_string_ptrlen)
 FUNC1(void, prng_seed_finish, val_prng)
 FUNC2(val_string, prng_read, val_prng, uint)
 FUNC3(void, prng_add_entropy, val_prng, uint, val_string_ptrlen)
+
+/*
+ * Key load/save functions, or rather, the BinarySource / strbuf API
+ * that sits just inside the file I/O versions.
+ */
+FUNC2(boolean, ppk_encrypted_s, val_string_binarysource, out_opt_val_string_asciz)
+FUNC2(boolean, rsa1_encrypted_s, val_string_binarysource, out_opt_val_string_asciz)
+FUNC5(boolean, ppk_loadpub_s, val_string_binarysource, out_opt_val_string_asciz, out_val_string_binarysink, out_opt_val_string_asciz, out_opt_val_string_asciz_const)
+FUNC4(int, rsa1_loadpub_s, val_string_binarysource, out_val_string_binarysink, out_opt_val_string_asciz, out_opt_val_string_asciz_const)
+FUNC4(opt_val_key, ppk_load_s, val_string_binarysource, out_opt_val_string_asciz, opt_val_string_asciz, out_opt_val_string_asciz_const)
+FUNC5(int, rsa1_load_s, val_string_binarysource, val_rsa, out_opt_val_string_asciz, opt_val_string_asciz, out_opt_val_string_asciz_const)
+FUNC3(val_string, ppk_save_sb, val_key, opt_val_string_asciz, opt_val_string_asciz)
+FUNC3(val_string, rsa1_save_sb, val_rsa, opt_val_string_asciz, opt_val_string_asciz)
+
+/*
+ * Key generation functions.
+ */
+FUNC1(val_key, rsa_generate, uint)
+FUNC1(val_key, dsa_generate, uint)
+FUNC1(opt_val_key, ecdsa_generate, uint)
+FUNC1(opt_val_key, eddsa_generate, uint)
+FUNC1(val_rsa, rsa1_generate, uint)
+FUNC5(val_mpint, primegen, uint, uint, uint, val_mpint, uint)
+FUNC3(val_pcs, pcs_new, uint, uint, uint)
+FUNC3(void, pcs_require_residue, val_pcs, val_mpint, val_mpint)
+FUNC2(void, pcs_require_residue_1, val_pcs, val_mpint)
+FUNC3(void, pcs_avoid_residue_small, val_pcs, uint, uint)
+FUNC1(void, pcs_ready, val_pcs)
+FUNC4(void, pcs_inspect, val_pcs, out_val_mpint, out_val_mpint, out_val_mpint)
+FUNC1(val_mpint, pcs_generate, val_pcs)
 
 /*
  * Miscellaneous.
@@ -239,7 +291,6 @@ FUNC1(uint, crc32_rfc1662, val_string_ptrlen)
 FUNC1(uint, crc32_ssh1, val_string_ptrlen)
 FUNC2(uint, crc32_update, uint, val_string_ptrlen)
 FUNC2(boolean, crcda_detect, val_string_ptrlen, val_string_ptrlen)
-FUNC5(val_mpint, primegen, uint, uint, uint, val_mpint, uint)
 
 /*
  * These functions aren't part of PuTTY's own API, but are additions
@@ -247,4 +298,5 @@ FUNC5(val_mpint, primegen, uint, uint, uint, val_mpint, uint)
  */
 FUNC1(void, random_queue, val_string_ptrlen)
 FUNC0(uint, random_queue_len)
+FUNC2(void, random_make_prng, hashalg, val_string_ptrlen)
 FUNC0(void, random_clear)

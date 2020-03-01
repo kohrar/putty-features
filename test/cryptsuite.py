@@ -15,40 +15,15 @@ except ImportError:
 
 from eccref import *
 from testcrypt import *
+from ssh import *
 
 try:
     base64decode = base64.decodebytes
 except AttributeError:
     base64decode = base64.decodestring
 
-def nbits(n):
-    # Mimic mp_get_nbits for ordinary Python integers.
-    assert 0 <= n
-    smax = next(s for s in itertools.count() if (n >> (1 << s)) == 0)
-    toret = 0
-    for shift in reversed([1 << s for s in range(smax)]):
-        if n >> shift != 0:
-            n >>= shift
-            toret += shift
-    assert n <= 1
-    if n == 1:
-        toret += 1
-    return toret
-
 def unhex(s):
     return binascii.unhexlify(s.replace(" ", "").replace("\n", ""))
-
-def ssh_uint32(n):
-    return struct.pack(">L", n)
-def ssh_string(s):
-    return ssh_uint32(len(s)) + s
-def ssh1_mpint(x):
-    bits = nbits(x)
-    bytevals = [0xFF & (x >> (8*n)) for n in range((bits-1)//8, -1, -1)]
-    return struct.pack(">H" + "B" * len(bytevals), bits, *bytevals)
-def ssh2_mpint(x):
-    bytevals = [0xFF & (x >> (8*n)) for n in range(nbits(x)//8, -1, -1)]
-    return struct.pack(">L" + "B" * len(bytevals), len(bytevals), *bytevals)
 
 def rsa_bare(e, n):
     rsa = rsa_new()
@@ -128,6 +103,12 @@ def queued_specific_random_data(data):
     yield None
     random_clear()
 
+@contextlib.contextmanager
+def random_prng(seed):
+    random_make_prng('sha256', seed)
+    yield None
+    random_clear()
+
 def hash_str(alg, message):
     h = ssh_hash_new(alg)
     ssh_hash_update(h, message)
@@ -148,6 +129,9 @@ def mac_str(alg, key, message, cipher=None):
     ssh2_mac_start(m)
     ssh2_mac_update(m, message)
     return ssh2_mac_genresult(m)
+
+def lcm(a, b):
+    return a * b // gcd(a, b)
 
 class MyTestBase(unittest.TestCase):
     "Intermediate class that adds useful helper methods."
@@ -360,6 +344,22 @@ class mpint(MyTestBase):
         bm = mp_copy(bi)
         self.assertEqual(int(mp_mul(am, bm)), ai * bi)
 
+    def testAddInteger(self):
+        initial = mp_copy(4444444444444444444444444)
+
+        x = mp_new(mp_max_bits(initial) + 64)
+
+        # mp_{add,sub}_integer_into should be able to cope with any
+        # uintmax_t. Test a number that requires more than 32 bits.
+        mp_add_integer_into(x, initial, 123123123123123)
+        self.assertEqual(int(x), 4444444444567567567567567)
+        mp_sub_integer_into(x, initial, 123123123123123)
+        self.assertEqual(int(x), 4444444444321321321321321)
+
+        # mp_mul_integer_into only takes a uint16_t integer input
+        mp_mul_integer_into(x, initial, 10001)
+        self.assertEqual(int(x), 44448888888888888888888884444)
+
     def testDivision(self):
         divisors = [1, 2, 3, 2**16+1, 2**32-1, 2**32+1, 2**128-159,
                     141421356237309504880168872420969807856967187537694807]
@@ -378,6 +378,18 @@ class mpint(MyTestBase):
                     self.assertEqual(int(mr), r)
                     self.assertEqual(int(mp_div(n, d)), q)
                     self.assertEqual(int(mp_mod(n, d)), r)
+
+                    # Make sure divmod_into can handle not getting one
+                    # of its output pointers (or even both).
+                    mp_clear(mq)
+                    mp_divmod_into(n, d, mq, None)
+                    self.assertEqual(int(mq), q)
+                    mp_clear(mr)
+                    mp_divmod_into(n, d, None, mr)
+                    self.assertEqual(int(mr), r)
+                    mp_divmod_into(n, d, None, None)
+                    # No tests we can do after that last one - we just
+                    # insist that it isn't allowed to have crashed!
 
     def testBitwise(self):
         p = 0x3243f6a8885a308d313198a2e03707344a4093822299f31d0082efa98ec4e
@@ -433,6 +445,48 @@ class mpint(MyTestBase):
                     self.assertEqual(
                         int(monty_invert(mc, monty_import(mc, x))),
                         int(monty_import(mc, inv)))
+
+    def testGCD(self):
+        powerpairs = [(0,0), (1,0), (1,1), (2,1), (2,2), (75,3), (17,23)]
+        for a2, b2 in powerpairs:
+            for a3, b3 in powerpairs:
+                for a5, b5 in powerpairs:
+                    a = 2**a2 * 3**a3 * 5**a5 * 17 * 19 * 23
+                    b = 2**b2 * 3**b3 * 5**b5 * 65423
+                    d = 2**min(a2, b2) * 3**min(a3, b3) * 5**min(a5, b5)
+
+                    ma = mp_copy(a)
+                    mb = mp_copy(b)
+
+                    self.assertEqual(int(mp_gcd(ma, mb)), d)
+
+                    md = mp_new(nbits(d))
+                    mA = mp_new(nbits(b))
+                    mB = mp_new(nbits(a))
+                    mp_gcd_into(ma, mb, md, mA, mB)
+                    self.assertEqual(int(md), d)
+                    A = int(mA)
+                    B = int(mB)
+                    self.assertEqual(a*A - b*B, d)
+                    self.assertTrue(0 <= A < b//d)
+                    self.assertTrue(0 <= B < a//d)
+
+                    self.assertEqual(mp_coprime(ma, mb), 1 if d==1 else 0)
+
+                    # Make sure gcd_into can handle not getting some
+                    # of its output pointers.
+                    mp_clear(md)
+                    mp_gcd_into(ma, mb, md, None, None)
+                    self.assertEqual(int(md), d)
+                    mp_clear(mA)
+                    mp_gcd_into(ma, mb, None, mA, None)
+                    self.assertEqual(int(mA), A)
+                    mp_clear(mB)
+                    mp_gcd_into(ma, mb, None, None, mB)
+                    self.assertEqual(int(mB), B)
+                    mp_gcd_into(ma, mb, None, None, None)
+                    # No tests we can do after that last one - we just
+                    # insist that it isn't allowed to have crashed!
 
     def testMonty(self):
         moduli = [5, 19, 2**16+1, 2**31-1, 2**128-159, 2**255-19,
@@ -572,9 +626,19 @@ class mpint(MyTestBase):
             self.assertEqual(int(mp), (x << i) & mp_mask(mp))
 
             mp_copy_into(mp, x)
+            mp_lshift_safe_into(mp, mp, i)
+            self.assertEqual(int(mp), (x << i) & mp_mask(mp))
+
+            mp_copy_into(mp, x)
             mp_rshift_fixed_into(mp, mp, i)
             self.assertEqual(int(mp), x >> i)
+
+            mp_copy_into(mp, x)
+            mp_rshift_safe_into(mp, mp, i)
+            self.assertEqual(int(mp), x >> i)
+
             self.assertEqual(int(mp_rshift_fixed(x, i)), x >> i)
+
             self.assertEqual(int(mp_rshift_safe(x, i)), x >> i)
 
     def testRandom(self):
@@ -705,6 +769,12 @@ class ecc(MyTestBase):
         check_point(ecc_montgomery_double(mP), rP + rP)
         check_point(ecc_montgomery_double(mQ), rQ + rQ)
 
+        zero = ecc_montgomery_point_new(mc, 0)
+        self.assertEqual(ecc_montgomery_is_identity(zero), False)
+        identity = ecc_montgomery_double(zero)
+        ecc_montgomery_get_affine(identity)
+        self.assertEqual(ecc_montgomery_is_identity(identity), True)
+
     def testEdwardsSimple(self):
         p, d, a = 3141592661, 2688750488, 367934288
 
@@ -802,6 +872,78 @@ class ecc(MyTestBase):
             rGi = ed25519.G * i
             self.assertEqual(int(x), int(rGi.x))
             self.assertEqual(int(y), int(rGi.y))
+
+class keygen(MyTestBase):
+    def testPrimeCandidateSource(self):
+        def inspect(pcs):
+            # Returns (pcs->limit, pcs->factor, pcs->addend) as Python integers
+            return tuple(map(int, pcs_inspect(pcs)))
+
+        # Test accumulating modular congruence requirements, by
+        # inspecting the internal values computed during
+        # require_residue. We ensure that the addend satisfies all our
+        # congruences and the factor is the lcm of all the moduli
+        # (hence, the arithmetic progression defined by those
+        # parameters is precisely the set of integers satisfying the
+        # requirements); we also ensure that the limiting values
+        # (addend itself at the low end, and addend + (limit-1) *
+        # factor at the high end) are the maximal subsequence of that
+        # progression that are within the originally specified range.
+
+        def check(pcs, lo, hi, mod_res_pairs):
+            limit, factor, addend = inspect(pcs)
+
+            for mod, res in mod_res_pairs:
+                self.assertEqual(addend % mod, res % mod)
+
+            self.assertEqual(factor, functools.reduce(
+                lcm, [mod for mod, res in mod_res_pairs]))
+
+            self.assertFalse(lo <= addend +      (-1) * factor < hi)
+            self.assertTrue (lo <= addend                      < hi)
+            self.assertTrue (lo <= addend + (limit-1) * factor < hi)
+            self.assertFalse(lo <= addend +  limit    * factor < hi)
+
+        pcs = pcs_new(64, 1, 1)
+        check(pcs, 2**63, 2**64, [(2, 1)])
+        pcs_require_residue(pcs, 3, 2)
+        check(pcs, 2**63, 2**64, [(2, 1), (3, 2)])
+        pcs_require_residue_1(pcs, 7)
+        check(pcs, 2**63, 2**64, [(2, 1), (3, 2), (7, 1)])
+        pcs_require_residue(pcs, 16, 7)
+        check(pcs, 2**63, 2**64, [(2, 1), (3, 2), (7, 1), (16, 7)])
+        pcs_require_residue(pcs, 49, 8)
+        check(pcs, 2**63, 2**64, [(2, 1), (3, 2), (7, 1), (16, 7), (49, 8)])
+
+        # Now test-generate some actual values, and ensure they
+        # satisfy all the congruences, and also avoid one residue mod
+        # 5 that we told them to. Also, give a nontrivial range.
+        pcs = pcs_new(64, 0xAB, 8)
+        pcs_require_residue(pcs, 0x100, 0xCD)
+        pcs_require_residue_1(pcs, 65537)
+        pcs_avoid_residue_small(pcs, 5, 3)
+        pcs_ready(pcs)
+        with random_prng("test seed"):
+            for i in range(100):
+                n = int(pcs_generate(pcs))
+                self.assertTrue((0xAB<<56) < n < (0xAC<<56))
+                self.assertEqual(n % 0x100, 0xCD)
+                self.assertEqual(n % 65537, 1)
+                self.assertNotEqual(n % 5, 3)
+
+                # I'm not actually testing here that the outputs of
+                # pcs_generate are non-multiples of _all_ primes up to
+                # 2^16. But checking this many for 100 turns is enough
+                # to be pretty sure. (If you take the product of
+                # (1-1/p) over all p in the list below, you find that
+                # a given random number has about a 13% chance of
+                # avoiding being a multiple of any of them. So 100
+                # trials without a mistake gives you 0.13^100 < 10^-88
+                # as the probability of it happening by chance. More
+                # likely the code is actually working :-)
+
+                for p in [2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61]:
+                    self.assertNotEqual(n % p, 0)
 
 class crypt(MyTestBase):
     def testSSH1Fingerprint(self):
@@ -1174,11 +1316,94 @@ class crypt(MyTestBase):
                 ssh_cipher_decrypt(cipher, iv[:ivlen])
                 self.assertEqualBin(ssh_cipher_decrypt(cipher, c), p)
 
+    def testRSAKex(self):
+        # Round-trip test of the RSA key exchange functions, plus a
+        # hardcoded plain/ciphertext pair to guard against the
+        # behaviour accidentally changing.
+        def blobs(n, e, d, p, q, iqmp):
+            # For RSA kex, the public blob is formatted exactly like
+            # any other SSH-2 RSA public key. But there's no private
+            # key blob format defined by the protocol, so for the
+            # purposes of making a test RSA private key, we borrow the
+            # function we already had that decodes one out of the wire
+            # format used in the SSH-1 agent protocol.
+            pubblob = ssh_string(b"ssh-rsa") + ssh2_mpint(e) + ssh2_mpint(n)
+            privblob = (ssh_uint32(nbits(n)) + ssh1_mpint(n) + ssh1_mpint(e) +
+                        ssh1_mpint(d) + ssh1_mpint(iqmp) +
+                        ssh1_mpint(q) + ssh1_mpint(p))
+            return pubblob, privblob
+
+        # Parameters for a test key.
+        p = 0xf49e4d21c1ec3d1c20dc8656cc29aadb2644a12c98ed6c81a6161839d20d398d
+        q = 0xa5f0bc464bf23c4c83cf17a2f396b15136fbe205c07cb3bb3bdb7ed357d1cd13
+        n = p*q
+        e = 37
+        d = int(mp_invert(e, (p-1)*(q-1)))
+        iqmp = int(mp_invert(q, p))
+        assert iqmp * q % p == 1
+        assert d * e % (p-1) == 1
+        assert d * e % (q-1) == 1
+
+        pubblob, privblob = blobs(n, e, d, p, q, iqmp)
+
+        pubkey = ssh_rsakex_newkey(pubblob)
+        privkey = get_rsa_ssh1_priv_agent(privblob)
+
+        plain = 0x123456789abcdef
+        hashalg = 'md5'
+        with queued_random_data(64, "rsakex encrypt test"):
+            cipher = ssh_rsakex_encrypt(pubkey, hashalg, ssh2_mpint(plain))
+        decoded = ssh_rsakex_decrypt(privkey, hashalg, cipher)
+        self.assertEqual(int(decoded), plain)
+        self.assertEqualBin(cipher, unhex(
+            '34277d1060dc0a434d98b4239de9cec59902a4a7d17a763587cdf8c25d57f51a'
+            '7964541892e7511798e61dd78429358f4d6a887a50d2c5ebccf0e04f48fc665c'
+        ))
+
+    def testMontgomeryKexLowOrderPoints(self):
+        # List of all the bad input values for Curve25519 which can
+        # end up generating a zero output key. You can find the first
+        # five (the ones in canonical representation, i.e. in
+        # [0,2^255-19)) by running
+        # find_montgomery_power2_order_x_values(curve25519.p, curve25519.a)
+        # and then encoding the results little-endian.
+        bad_keys_25519 = [
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "0100000000000000000000000000000000000000000000000000000000000000",
+            "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157",
+            "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+            "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+
+            # Input values less than 2^255 are reduced mod p, so those
+            # of the above values which are still in that range when
+            # you add 2^255-19 to them should also be caught.
+            "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+            "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+
+            # Input values are reduced mod 2^255 before reducing mod
+            # p. So setting the high-order bit of any of the above 7
+            # values should also lead to rejection, because it will be
+            # stripped off and then the value will be recognised as
+            # one of the above.
+            "0000000000000000000000000000000000000000000000000000000000000080",
+            "0100000000000000000000000000000000000000000000000000000000000080",
+            "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f11d7",
+            "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b880",
+            "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        ]
+
+        with random_prng("doesn't matter"):
+            ecdh25519 = ssh_ecdhkex_newkey('curve25519')
+        for pub in bad_keys_25519:
+            key = ssh_ecdhkex_getkey(ecdh25519, unhex(pub))
+            self.assertEqual(key, None)
+
     def testPRNG(self):
         hashalg = 'sha256'
         seed = b"hello, world"
         entropy = b'1234567890' * 100
-        rev = lambda s: valbytes(reversed(bytevals(s)))
 
         # Replicate the generation of some random numbers. to ensure
         # they really are the hashes of what they're supposed to be.
@@ -1193,21 +1418,21 @@ class crypt(MyTestBase):
 
         key1 = hash_str(hashalg, b'R' + seed)
         expected_data1 = b''.join(
-            rev(hash_str(hashalg, key1 + b'G' + ssh2_mpint(counter)))
+            hash_str(hashalg, key1 + b'G' + ssh2_mpint(counter))
             for counter in range(4))
         # After prng_read finishes, we expect the PRNG to have
         # automatically reseeded itself, so that if its internal state
         # is revealed then the previous output can't be reconstructed.
         key2 = hash_str(hashalg, key1 + b'R')
         expected_data2 = b''.join(
-            rev(hash_str(hashalg, key2 + b'G' + ssh2_mpint(counter)))
+            hash_str(hashalg, key2 + b'G' + ssh2_mpint(counter))
             for counter in range(4,8))
         # There will have been another reseed after the second
         # prng_read, and then another due to the entropy.
         key3 = hash_str(hashalg, key2 + b'R')
         key4 = hash_str(hashalg, key3 + b'R' + hash_str(hashalg, entropy))
         expected_data3 = b''.join(
-            rev(hash_str(hashalg, key4 + b'G' + ssh2_mpint(counter)))
+            hash_str(hashalg, key4 + b'G' + ssh2_mpint(counter))
             for counter in range(8,12))
 
         self.assertEqualBin(data1, expected_data1)
@@ -1430,6 +1655,121 @@ culpa qui officia deserunt mollit anim id est laborum.
                     for key in [pubkey, privkey, privkey2]:
                         self.assertFalse(ssh_key_verify(
                             key, badsig, test_message))
+
+    def testPPKLoadSave(self):
+        # Stability test of PPK load/save functions.
+        input_clear_key = b"""\
+PuTTY-User-Key-File-2: ssh-ed25519
+Encryption: none
+Comment: ed25519-key-20200105
+Public-Lines: 2
+AAAAC3NzaC1lZDI1NTE5AAAAIHJCszOHaI9X/yGLtjn22f0hO6VPMQDVtctkym6F
+JH1W
+Private-Lines: 1
+AAAAIGvvIpl8jyqn8Xufkw6v3FnEGtXF3KWw55AP3/AGEBpY
+Private-MAC: 2a629acfcfbe28488a1ba9b6948c36406bc28422
+"""
+        input_encrypted_key = b"""\
+PuTTY-User-Key-File-2: ssh-ed25519
+Encryption: aes256-cbc
+Comment: ed25519-key-20200105
+Public-Lines: 2
+AAAAC3NzaC1lZDI1NTE5AAAAIHJCszOHaI9X/yGLtjn22f0hO6VPMQDVtctkym6F
+JH1W
+Private-Lines: 1
+4/jKlTgC652oa9HLVGrMjHZw7tj0sKRuZaJPOuLhGTvb25Jzpcqpbi+Uf+y+uo+Z
+Private-MAC: 5b1f6f4cc43eb0060d2c3e181bc0129343adba2b
+"""
+        algorithm = b'ssh-ed25519'
+        comment = b'ed25519-key-20200105'
+        pp = b'test-passphrase'
+        public_blob = unhex(
+            '0000000b7373682d65643235353139000000207242b33387688f57ff218bb639'
+            'f6d9fd213ba54f3100d5b5cb64ca6e85247d56')
+
+        self.assertEqual(ppk_encrypted_s(input_clear_key), (False, comment))
+        self.assertEqual(ppk_encrypted_s(input_encrypted_key), (True, comment))
+        self.assertEqual(ppk_encrypted_s("not a key file"), (False, None))
+
+        self.assertEqual(ppk_loadpub_s(input_clear_key),
+                         (True, algorithm, public_blob, comment, None))
+        self.assertEqual(ppk_loadpub_s(input_encrypted_key),
+                         (True, algorithm, public_blob, comment, None))
+        self.assertEqual(ppk_loadpub_s("not a key file"),
+                         (False, None, b'', None,
+                          b'not a PuTTY SSH-2 private key'))
+
+        k1, c, e = ppk_load_s(input_clear_key, None)
+        self.assertEqual((c, e), (comment, None))
+        k2, c, e = ppk_load_s(input_encrypted_key, pp)
+        self.assertEqual((c, e), (comment, None))
+
+        self.assertEqual(ppk_save_sb(k1, comment, None), input_clear_key)
+        self.assertEqual(ppk_save_sb(k2, comment, None), input_clear_key)
+
+        self.assertEqual(ppk_save_sb(k1, comment, pp), input_encrypted_key)
+        self.assertEqual(ppk_save_sb(k2, comment, pp), input_encrypted_key)
+
+    def testRSA1LoadSave(self):
+        # Stability test of SSH-1 RSA key-file load/save functions.
+        input_clear_key = unhex(
+            "5353482050524956415445204B45592046494C4520464F524D415420312E310A"
+            "000000000000000002000200BB115A85B741E84E3D940E690DF96A0CBFDC07CA"
+            "70E51DA8234D211DE77341CEF40C214CAA5DCF68BE2127447FD6C84CCB17D057"
+            "A74F2365B9D84A78906AEB51000625000000107273612D6B65792D3230323030"
+            "313036208E208E0200929EE615C6FC4E4B29585E52570F984F2E97B3144AA5BD"
+            "4C6EB2130999BB339305A21FFFA79442462A8397AF8CAC395A3A3827DE10457A"
+            "1F1B277ABFB8C069C100FF55B1CAD69B3BD9E42456CF28B1A4B98130AFCE08B2"
+            "8BCFFF5FFFED76C5D51E9F0100C5DE76889C62B1090A770AE68F087A19AB5126"
+            "E60DF87710093A2AD57B3380FB0100F2068AC47ECB33BF8F13DF402BABF35EE7"
+            "26BD32F7564E51502DF5C8F4888B2300000000")
+        input_encrypted_key = unhex(
+            "5353482050524956415445204b45592046494c4520464f524d415420312e310a"
+            "000300000000000002000200bb115a85b741e84e3d940e690df96a0cbfdc07ca"
+            "70e51da8234d211de77341cef40c214caa5dcf68be2127447fd6c84ccb17d057"
+            "a74f2365b9d84a78906aeb51000625000000107273612d6b65792d3230323030"
+            "3130363377f926e811a5f044c52714801ecdcf9dd572ee0a193c4f67e87ab2ce"
+            "4569d0c5776fd6028909ed8b6d663bef15d207d3ef6307e7e21dbec56e8d8b4e"
+            "894ded34df891bb29bae6b2b74805ac80f7304926abf01ae314dd69c64240761"
+            "34f15d50c99f7573252993530ec9c4d5016dd1f5191730cda31a5d95d362628b"
+            "2a26f4bb21840d01c8360e4a6ce216c4686d25b8699d45cf361663bb185e2c5e"
+            "652012a1e0f9d6d19afbb28506f7775bfd8129")
+
+        comment = b'rsa-key-20200106'
+        pp = b'test-passphrase'
+        public_blob = unhex(
+            "000002000006250200bb115a85b741e84e3d940e690df96a0cbfdc07ca70e51d"
+            "a8234d211de77341cef40c214caa5dcf68be2127447fd6c84ccb17d057a74f23"
+            "65b9d84a78906aeb51")
+
+        self.assertEqual(rsa1_encrypted_s(input_clear_key), (False, comment))
+        self.assertEqual(rsa1_encrypted_s(input_encrypted_key),
+                         (True, comment))
+        self.assertEqual(rsa1_encrypted_s("not a key file"), (False, None))
+
+        self.assertEqual(rsa1_loadpub_s(input_clear_key),
+                         (1, public_blob, comment, None))
+        self.assertEqual(rsa1_loadpub_s(input_encrypted_key),
+                         (1, public_blob, comment, None))
+
+        k1 = rsa_new()
+        status, c, e = rsa1_load_s(input_clear_key, k1, None)
+        self.assertEqual((status, c, e), (1, comment, None))
+        k2 = rsa_new()
+        status, c, e = rsa1_load_s(input_clear_key, k2, None)
+        self.assertEqual((status, c, e), (1, comment, None))
+
+        with queued_specific_random_data(unhex("208e")):
+            self.assertEqual(rsa1_save_sb(k1, comment, None), input_clear_key)
+        with queued_specific_random_data(unhex("208e")):
+            self.assertEqual(rsa1_save_sb(k2, comment, None), input_clear_key)
+
+        with queued_specific_random_data(unhex("99f3")):
+            self.assertEqual(rsa1_save_sb(k1, comment, pp),
+                             input_encrypted_key)
+        with queued_specific_random_data(unhex("99f3")):
+            self.assertEqual(rsa1_save_sb(k2, comment, pp),
+                             input_encrypted_key)
 
 class standard_test_vectors(MyTestBase):
     def testAES(self):

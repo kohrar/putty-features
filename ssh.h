@@ -52,6 +52,7 @@ struct ssh_channel;
 typedef struct PacketQueueNode PacketQueueNode;
 struct PacketQueueNode {
     PacketQueueNode *next, *prev;
+    size_t formal_size;    /* contribution to PacketQueueBase's total_size */
     bool on_free_queue;     /* is this packet scheduled for freeing? */
 };
 
@@ -84,6 +85,7 @@ typedef struct PktOut {
 
 typedef struct PacketQueueBase {
     PacketQueueNode end;
+    size_t total_size;    /* sum of all formal_size fields on the queue */
     struct IdempotentCallback *ic;
 } PacketQueueBase;
 
@@ -383,7 +385,7 @@ char *portfwdmgr_connect(PortFwdManager *mgr, Channel **chan_ret,
 bool portfwdmgr_listen(PortFwdManager *mgr, const char *host, int port,
                        const char *keyhost, int keyport, Conf *conf);
 bool portfwdmgr_unlisten(PortFwdManager *mgr, const char *host, int port);
-Channel *portfwd_raw_new(ConnectionLayer *cl, Plug **plug);
+Channel *portfwd_raw_new(ConnectionLayer *cl, Plug **plug, bool start_ready);
 void portfwd_raw_free(Channel *pfchan);
 void portfwd_raw_setup(Channel *pfchan, Socket *s, SshChannel *sc);
 
@@ -397,18 +399,19 @@ void ssh_throttle_conn(Ssh *ssh, int adjust);
 void ssh_got_exitcode(Ssh *ssh, int status);
 void ssh_ldisc_update(Ssh *ssh);
 void ssh_got_fallback_cmd(Ssh *ssh);
+bool ssh_is_bare(Ssh *ssh);
 
 /* Communications back to ssh.c from the BPP */
 void ssh_conn_processed_data(Ssh *ssh);
 void ssh_check_frozen(Ssh *ssh);
 
 /* Functions to abort the connection, for various reasons. */
-void ssh_remote_error(Ssh *ssh, const char *fmt, ...);
-void ssh_remote_eof(Ssh *ssh, const char *fmt, ...);
-void ssh_proto_error(Ssh *ssh, const char *fmt, ...);
-void ssh_sw_abort(Ssh *ssh, const char *fmt, ...);
-void ssh_sw_abort_deferred(Ssh *ssh, const char *fmt, ...);
-void ssh_user_close(Ssh *ssh, const char *fmt, ...);
+void ssh_remote_error(Ssh *ssh, const char *fmt, ...) PRINTF_LIKE(2, 3);
+void ssh_remote_eof(Ssh *ssh, const char *fmt, ...) PRINTF_LIKE(2, 3);
+void ssh_proto_error(Ssh *ssh, const char *fmt, ...) PRINTF_LIKE(2, 3);
+void ssh_sw_abort(Ssh *ssh, const char *fmt, ...) PRINTF_LIKE(2, 3);
+void ssh_sw_abort_deferred(Ssh *ssh, const char *fmt, ...) PRINTF_LIKE(2, 3);
+void ssh_user_close(Ssh *ssh, const char *fmt, ...) PRINTF_LIKE(2, 3);
 
 /* Bit positions in the SSH-1 cipher protocol word */
 #define SSH1_CIPHER_IDEA        1
@@ -525,6 +528,24 @@ struct eddsa_key {
 WeierstrassPoint *ecdsa_public(mp_int *private_key, const ssh_keyalg *alg);
 EdwardsPoint *eddsa_public(mp_int *private_key, const ssh_keyalg *alg);
 
+typedef struct key_components {
+    size_t ncomponents, componentsize;
+    struct {
+        char *name;
+        bool is_mp_int;
+        union {
+            char *text;
+            mp_int *mp;
+        };
+    } *components;
+} key_components;
+key_components *key_components_new(void);
+void key_components_add_text(key_components *kc,
+                             const char *name, const char *value);
+void key_components_add_mp(key_components *kc,
+                           const char *name, mp_int *value);
+void key_components_free(key_components *kc);
+
 /*
  * SSH-1 never quite decided which order to store the two components
  * of an RSA key. During connection setup, the server sends its host
@@ -539,6 +560,7 @@ void BinarySource_get_rsa_ssh1_pub(
     BinarySource *src, RSAKey *result, RsaSsh1Order order);
 void BinarySource_get_rsa_ssh1_priv(
     BinarySource *src, RSAKey *rsa);
+RSAKey *BinarySource_get_rsa_ssh1_priv_agent(BinarySource *src);
 bool rsa_ssh1_encrypt(unsigned char *data, int length, RSAKey *key);
 mp_int *rsa_ssh1_decrypt(mp_int *input, RSAKey *key);
 bool rsa_ssh1_decrypt_pkcs1(mp_int *input, RSAKey *key, strbuf *outbuf);
@@ -547,8 +569,10 @@ char *rsa_ssh1_fingerprint(RSAKey *key);
 bool rsa_verify(RSAKey *key);
 void rsa_ssh1_public_blob(BinarySink *bs, RSAKey *key, RsaSsh1Order order);
 int rsa_ssh1_public_blob_len(ptrlen data);
+void rsa_ssh1_private_blob_agent(BinarySink *bs, RSAKey *key);
 void freersapriv(RSAKey *key);
 void freersakey(RSAKey *key);
+key_components *rsa_components(RSAKey *key);
 
 uint32_t crc32_rfc1662(ptrlen data);
 uint32_t crc32_ssh1(ptrlen data);
@@ -714,26 +738,45 @@ struct ssh_hash {
 
 struct ssh_hashalg {
     ssh_hash *(*new)(const ssh_hashalg *alg);
-    ssh_hash *(*copy)(ssh_hash *);
-    void (*final)(ssh_hash *, unsigned char *); /* ALSO FREES THE ssh_hash! */
+    void (*reset)(ssh_hash *);
+    void (*copyfrom)(ssh_hash *dest, ssh_hash *src);
+    void (*digest)(ssh_hash *, unsigned char *);
     void (*free)(ssh_hash *);
-    int hlen; /* output length in bytes */
-    int blocklen; /* length of the hash's input block, or 0 for N/A */
+    size_t hlen; /* output length in bytes */
+    size_t blocklen; /* length of the hash's input block, or 0 for N/A */
     const char *text_basename;     /* the semantic name of the hash */
     const char *annotation;   /* extra info, e.g. which of multiple impls */
     const char *text_name;    /* both combined, e.g. "SHA-n (unaccelerated)" */
 };
 
 static inline ssh_hash *ssh_hash_new(const ssh_hashalg *alg)
-{ return alg->new(alg); }
-static inline ssh_hash *ssh_hash_copy(ssh_hash *h)
-{ return h->vt->copy(h); }
-static inline void ssh_hash_final(ssh_hash *h, unsigned char *out)
-{ h->vt->final(h, out); }
+{ ssh_hash *h = alg->new(alg); if (h) h->vt->reset(h); return h; }
+static inline ssh_hash *ssh_hash_copy(ssh_hash *orig)
+{ ssh_hash *h = orig->vt->new(orig->vt); h->vt->copyfrom(h, orig); return h; }
+static inline void ssh_hash_digest(ssh_hash *h, unsigned char *out)
+{ h->vt->digest(h, out); }
 static inline void ssh_hash_free(ssh_hash *h)
 { h->vt->free(h); }
 static inline const ssh_hashalg *ssh_hash_alg(ssh_hash *h)
 { return h->vt; }
+
+/* The reset and copyfrom vtable methods return void. But for call-site
+ * convenience, these wrappers return their input pointer. */
+static inline ssh_hash *ssh_hash_reset(ssh_hash *h)
+{ h->vt->reset(h); return h; }
+static inline ssh_hash *ssh_hash_copyfrom(ssh_hash *dest, ssh_hash *src)
+{ dest->vt->copyfrom(dest, src); return dest; }
+
+/* ssh_hash_final emits the digest _and_ frees the ssh_hash */
+static inline void ssh_hash_final(ssh_hash *h, unsigned char *out)
+{ h->vt->digest(h, out); h->vt->free(h); }
+
+/* ssh_hash_digest_nondestructive generates a finalised hash from the
+ * given object without changing its state, so you can continue
+ * appending data to get a hash of an extended string. */
+static inline void ssh_hash_digest_nondestructive(ssh_hash *h,
+                                                  unsigned char *out)
+{ ssh_hash_final(ssh_hash_copy(h), out); }
 
 /* Handy macros for defining all those text-name fields at once */
 #define HASHALG_NAMES_BARE(base) \
@@ -777,6 +820,7 @@ struct ssh_keyalg {
     void (*private_blob)(ssh_key *key, BinarySink *);
     void (*openssh_blob) (ssh_key *key, BinarySink *);
     char *(*cache_str) (ssh_key *key);
+    key_components *(*components) (ssh_key *key);
 
     /* 'Class methods' that don't deal with an ssh_key at all */
     int (*pubkey_bits) (const ssh_keyalg *self, ptrlen blob);
@@ -813,6 +857,8 @@ static inline void ssh_key_openssh_blob(ssh_key *key, BinarySink *bs)
 { key->vt->openssh_blob(key, bs); }
 static inline char *ssh_key_cache_str(ssh_key *key)
 { return key->vt->cache_str(key); }
+static inline key_components *ssh_key_components(ssh_key *key)
+{ return key->vt->components(key); }
 static inline int ssh_key_public_bits(const ssh_keyalg *self, ptrlen blob)
 { return self->pubkey_bits(self, blob); }
 static inline const ssh_keyalg *ssh_key_alg(ssh_key *key)
@@ -1123,13 +1169,6 @@ mp_int *dh_create_e(dh_ctx *, int nbits);
 const char *dh_validate_f(dh_ctx *, mp_int *f);
 mp_int *dh_find_K(dh_ctx *, mp_int *f);
 
-bool rsa_ssh1_encrypted(const Filename *filename, char **comment);
-int rsa_ssh1_loadpub(const Filename *filename, BinarySink *bs,
-                     char **commentptr, const char **errorstr);
-int rsa_ssh1_loadkey(const Filename *filename, RSAKey *key,
-                     const char *passphrase, const char **errorstr);
-bool rsa_ssh1_savekey(const Filename *filename, RSAKey *key, char *passphrase);
-
 static inline bool is_base64_char(char c)
 {
     return ((c >= '0' && c <= '9') ||
@@ -1144,20 +1183,46 @@ extern void base64_encode_atom(const unsigned char *data, int n, char *out);
 extern void base64_encode(FILE *fp, const unsigned char *data, int datalen,
                           int cpl);
 
-/* ssh2_load_userkey can return this as an error */
+/* ppk_load_* can return this as an error */
 extern ssh2_userkey ssh2_wrong_passphrase;
 #define SSH2_WRONG_PASSPHRASE (&ssh2_wrong_passphrase)
 
-bool ssh2_userkey_encrypted(const Filename *filename, char **comment);
-ssh2_userkey *ssh2_load_userkey(
-    const Filename *filename, const char *passphrase, const char **errorstr);
-bool ssh2_userkey_loadpub(
-    const Filename *filename, char **algorithm, BinarySink *bs,
-    char **commentptr, const char **errorstr);
-bool ssh2_save_userkey(
-    const Filename *filename, ssh2_userkey *key, char *passphrase);
+bool ppk_encrypted_s(BinarySource *src, char **comment);
+bool ppk_encrypted_f(const Filename *filename, char **comment);
+bool rsa1_encrypted_s(BinarySource *src, char **comment);
+bool rsa1_encrypted_f(const Filename *filename, char **comment);
+
+ssh2_userkey *ppk_load_s(BinarySource *src, const char *passphrase,
+                         const char **errorstr);
+ssh2_userkey *ppk_load_f(const Filename *filename, const char *passphrase,
+                         const char **errorstr);
+int rsa1_load_s(BinarySource *src, RSAKey *key,
+                const char *passphrase, const char **errorstr);
+int rsa1_load_f(const Filename *filename, RSAKey *key,
+                const char *passphrase, const char **errorstr);
+
+strbuf *ppk_save_sb(ssh2_userkey *key, const char *passphrase);
+bool ppk_save_f(const Filename *filename, ssh2_userkey *key,
+                const char *passphrase);
+strbuf *rsa1_save_sb(RSAKey *key, const char *passphrase);
+bool rsa1_save_f(const Filename *filename, RSAKey *key,
+                 const char *passphrase);
+
+bool ppk_loadpub_s(BinarySource *src, char **algorithm, BinarySink *bs,
+                   char **commentptr, const char **errorstr);
+bool ppk_loadpub_f(const Filename *filename, char **algorithm, BinarySink *bs,
+                   char **commentptr, const char **errorstr);
+int rsa1_loadpub_s(BinarySource *src, BinarySink *bs,
+                   char **commentptr, const char **errorstr);
+int rsa1_loadpub_f(const Filename *filename, BinarySink *bs,
+                   char **commentptr, const char **errorstr);
+
 const ssh_keyalg *find_pubkey_alg(const char *name);
 const ssh_keyalg *find_pubkey_alg_len(ptrlen name);
+
+/* Convenient wrappers on the LoadedFile mechanism suitable for key files */
+LoadedFile *lf_load_keyfile(const Filename *filename, const char **errptr);
+LoadedFile *lf_load_keyfile_fp(FILE *fp, const char **errptr);
 
 enum {
     SSH_KEYTYPE_UNOPENABLE,
@@ -1211,14 +1276,21 @@ void ssh2_write_pubkey(FILE *fp, const char *comment,
 char *ssh2_fingerprint_blob(ptrlen);
 char *ssh2_fingerprint(ssh_key *key);
 int key_type(const Filename *filename);
+int key_type_s(BinarySource *src);
 const char *key_type_to_str(int type);
 
 bool import_possible(int type);
 int import_target_type(int type);
 bool import_encrypted(const Filename *filename, int type, char **comment);
+bool import_encrypted_s(const Filename *filename, BinarySource *src,
+                      int type, char **comment);
 int import_ssh1(const Filename *filename, int type,
                 RSAKey *key, char *passphrase, const char **errmsg_p);
+int import_ssh1_s(BinarySource *src, int type,
+                  RSAKey *key, char *passphrase, const char **errmsg_p);
 ssh2_userkey *import_ssh2(const Filename *filename, int type,
+                          char *passphrase, const char **errmsg_p);
+ssh2_userkey *import_ssh2_s(BinarySource *src, int type,
                           char *passphrase, const char **errmsg_p);
 bool export_ssh1(const Filename *filename, int type,
                  RSAKey *key, char *passphrase);
@@ -1263,7 +1335,6 @@ int eddsa_generate(struct eddsa_key *key, int bits, progfn_t pfn,
 mp_int *primegen(
     int bits, int modulus, int residue, mp_int *factor,
     int phase, progfn_t pfn, void *pfnparam, unsigned firstbits);
-void invent_firstbits(unsigned *one, unsigned *two, unsigned min_separation);
 
 /*
  * Connection-sharing API provided by platforms. This function must
@@ -1441,6 +1512,8 @@ enum {
 #define SSH2_AGENTC_ADD_IDENTITY                17
 #define SSH2_AGENTC_REMOVE_IDENTITY             18
 #define SSH2_AGENTC_REMOVE_ALL_IDENTITIES       19
+#define SSH2_AGENTC_EXTENSION                   27
+#define SSH_AGENT_EXTENSION_FAILURE             28
 
 /*
  * Assorted other SSH-related enumerations.

@@ -640,6 +640,27 @@ static char *ecdsa_cache_str(ssh_key *key)
     return toret;
 }
 
+static key_components *ecdsa_components(ssh_key *key)
+{
+    struct ecdsa_key *ek = container_of(key, struct ecdsa_key, sshk);
+    key_components *kc = key_components_new();
+
+    key_components_add_text(kc, "key_type", "ECDSA");
+    key_components_add_text(kc, "curve_name", ek->curve->textname);
+
+    mp_int *x, *y;
+    ecc_weierstrass_get_affine(ek->publicKey, &x, &y);
+    key_components_add_mp(kc, "public_affine_x", x);
+    key_components_add_mp(kc, "public_affine_y", y);
+    mp_free(x);
+    mp_free(y);
+
+    if (ek->privateKey)
+        key_components_add_mp(kc, "private_exponent", ek->privateKey);
+
+    return kc;
+}
+
 static char *eddsa_cache_str(ssh_key *key)
 {
     struct eddsa_key *ek = container_of(key, struct eddsa_key, sshk);
@@ -650,6 +671,27 @@ static char *eddsa_cache_str(ssh_key *key)
     mp_free(x);
     mp_free(y);
     return toret;
+}
+
+static key_components *eddsa_components(ssh_key *key)
+{
+    struct eddsa_key *ek = container_of(key, struct eddsa_key, sshk);
+    key_components *kc = key_components_new();
+
+    key_components_add_text(kc, "key_type", "EdDSA");
+    key_components_add_text(kc, "curve_name", ek->curve->textname);
+
+    mp_int *x, *y;
+    ecc_edwards_get_affine(ek->publicKey, &x, &y);
+    key_components_add_mp(kc, "public_affine_x", x);
+    key_components_add_mp(kc, "public_affine_y", y);
+    mp_free(x);
+    mp_free(y);
+
+    if (ek->privateKey)
+        key_components_add_mp(kc, "private_exponent", ek->privateKey);
+
+    return kc;
 }
 
 static void ecdsa_public_blob(ssh_key *key, BinarySink *bs)
@@ -1124,7 +1166,7 @@ static void eddsa_sign(ssh_key *key, ptrlen data,
     mp_free(s);
 }
 
-const struct ecsign_extra sign_extra_ed25519 = {
+static const struct ecsign_extra sign_extra_ed25519 = {
     ec_ed25519, &ssh_sha512,
     NULL, 0,
 };
@@ -1141,6 +1183,7 @@ const ssh_keyalg ssh_ecdsa_ed25519 = {
     eddsa_private_blob,
     eddsa_openssh_blob,
     eddsa_cache_str,
+    eddsa_components,
 
     ec_shared_pubkey_bits,
 
@@ -1154,7 +1197,7 @@ const ssh_keyalg ssh_ecdsa_ed25519 = {
 static const unsigned char nistp256_oid[] = {
     0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07
 };
-const struct ecsign_extra sign_extra_nistp256 = {
+static const struct ecsign_extra sign_extra_nistp256 = {
     ec_p256, &ssh_sha256,
     nistp256_oid, lenof(nistp256_oid),
 };
@@ -1171,6 +1214,7 @@ const ssh_keyalg ssh_ecdsa_nistp256 = {
     ecdsa_private_blob,
     ecdsa_openssh_blob,
     ecdsa_cache_str,
+    ecdsa_components,
 
     ec_shared_pubkey_bits,
 
@@ -1184,7 +1228,7 @@ const ssh_keyalg ssh_ecdsa_nistp256 = {
 static const unsigned char nistp384_oid[] = {
     0x2b, 0x81, 0x04, 0x00, 0x22
 };
-const struct ecsign_extra sign_extra_nistp384 = {
+static const struct ecsign_extra sign_extra_nistp384 = {
     ec_p384, &ssh_sha384,
     nistp384_oid, lenof(nistp384_oid),
 };
@@ -1201,6 +1245,7 @@ const ssh_keyalg ssh_ecdsa_nistp384 = {
     ecdsa_private_blob,
     ecdsa_openssh_blob,
     ecdsa_cache_str,
+    ecdsa_components,
 
     ec_shared_pubkey_bits,
 
@@ -1214,7 +1259,7 @@ const ssh_keyalg ssh_ecdsa_nistp384 = {
 static const unsigned char nistp521_oid[] = {
     0x2b, 0x81, 0x04, 0x00, 0x23
 };
-const struct ecsign_extra sign_extra_nistp521 = {
+static const struct ecsign_extra sign_extra_nistp521 = {
     ec_p521, &ssh_sha512,
     nistp521_oid, lenof(nistp521_oid),
 };
@@ -1231,6 +1276,7 @@ const ssh_keyalg ssh_ecdsa_nistp521 = {
     ecdsa_private_blob,
     ecdsa_openssh_blob,
     ecdsa_cache_str,
+    ecdsa_components,
 
     ec_shared_pubkey_bits,
 
@@ -1365,26 +1411,18 @@ static mp_int *ssh_ecdhkex_m_getkey(ecdh_key *dh, ptrlen remoteKey)
      * will be reduced mod p. */
     mp_reduce_mod_2to(remote_x, dh->curve->fieldBits);
 
-    if (mp_eq_integer(remote_x, 0)) {
-        /*
-         * The libssh spec for Curve25519 key exchange says that
-         * 'every possible public key maps to a valid ECC Point' and
-         * therefore no validation needs to be done on the server's
-         * provided x-coordinate. However, I don't believe it: an
-         * x-coordinate of zero doesn't work sensibly, because you end
-         * up dividing by zero in the doubling formula
-         * (x+1)^2(x-1)^2/(4(x^3+ax^2+x)). (Put another way, although
-         * that point P is not the _identity_ of the curve, it is a
-         * torsion point such that 2P is the identity.)
-         */
-        mp_free(remote_x);
-        return NULL;
-    }
     MontgomeryPoint *remote_p = ecc_montgomery_point_new(
         dh->curve->m.mc, remote_x);
     mp_free(remote_x);
 
     MontgomeryPoint *p = ecc_montgomery_multiply(remote_p, dh->private);
+
+    if (ecc_montgomery_is_identity(p)) {
+        ecc_montgomery_point_free(remote_p);
+        ecc_montgomery_point_free(p);
+        return NULL;
+    }
+
     mp_int *x;
     ecc_montgomery_get_affine(p, &x);
 
@@ -1449,7 +1487,7 @@ const ssh_kex ssh_ec_kex_curve25519 = {
     &ssh_sha256, &kex_extra_curve25519,
 };
 
-const struct eckex_extra kex_extra_nistp256 = {
+static const struct eckex_extra kex_extra_nistp256 = {
     ec_p256,
     ssh_ecdhkex_w_setup,
     ssh_ecdhkex_w_cleanup,
@@ -1461,7 +1499,7 @@ const ssh_kex ssh_ec_kex_nistp256 = {
     &ssh_sha256, &kex_extra_nistp256,
 };
 
-const struct eckex_extra kex_extra_nistp384 = {
+static const struct eckex_extra kex_extra_nistp384 = {
     ec_p384,
     ssh_ecdhkex_w_setup,
     ssh_ecdhkex_w_cleanup,
@@ -1473,7 +1511,7 @@ const ssh_kex ssh_ec_kex_nistp384 = {
     &ssh_sha384, &kex_extra_nistp384,
 };
 
-const struct eckex_extra kex_extra_nistp521 = {
+static const struct eckex_extra kex_extra_nistp521 = {
     ec_p521,
     ssh_ecdhkex_w_setup,
     ssh_ecdhkex_w_cleanup,
@@ -1549,7 +1587,7 @@ bool ec_ed_alg_and_curve_by_bits(
     int bits, const struct ec_curve **curve, const ssh_keyalg **alg)
 {
     switch (bits) {
-      case 256: *alg = &ssh_ecdsa_ed25519; break;
+      case 255: case 256: *alg = &ssh_ecdsa_ed25519; break;
       default: return false;
     }
     *curve = ((struct ecsign_extra *)(*alg)->extra)->curve();

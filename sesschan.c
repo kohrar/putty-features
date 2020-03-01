@@ -168,6 +168,7 @@ static const LogPolicyVtable sesschan_logpolicy_vt = {
     sesschan_eventlog,
     sesschan_askappend,
     sesschan_logging_error,
+    null_lp_verbose_no,
 };
 
 static size_t sesschan_seat_output(
@@ -196,6 +197,8 @@ static const SeatVtable sesschan_seat_vt = {
     sesschan_get_window_pixel_size,
     nullseat_stripctrl_new,
     nullseat_set_trust_status,
+    nullseat_verbose_no,
+    nullseat_interactive_no,
 };
 
 Channel *sesschan_new(SshChannel *c, LogContext *logctx,
@@ -349,7 +352,7 @@ bool sesschan_run_subsystem(Channel *chan, ptrlen subsys)
     return false;
 }
 
-static void fwd_log(Plug *plug, int type, SockAddr *addr, int port,
+static void fwd_log(Plug *plug, PlugLogType type, SockAddr *addr, int port,
                     const char *error_msg, int error_code)
 { /* don't expect any weirdnesses from a listening socket */ }
 static void fwd_closing(Plug *plug, const char *error_msg, int error_code,
@@ -365,7 +368,7 @@ static int xfwd_accepting(Plug *p, accept_fn_t constructor, accept_ctx_t ctx)
     SocketPeerInfo *pi;
     const char *err;
 
-    chan = portfwd_raw_new(sess->c->cl, &plug);
+    chan = portfwd_raw_new(sess->c->cl, &plug, false);
     s = constructor(ctx, plug);
     if ((err = sk_socket_error(s)) != NULL) {
         portfwd_raw_free(chan);
@@ -441,7 +444,7 @@ static int agentfwd_accepting(
     Socket *s;
     const char *err;
 
-    chan = portfwd_raw_new(sess->c->cl, &plug);
+    chan = portfwd_raw_new(sess->c->cl, &plug, false);
     s = constructor(ctx, plug);
     if ((err = sk_socket_error(s)) != NULL) {
         portfwd_raw_free(chan);

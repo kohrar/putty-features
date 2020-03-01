@@ -83,6 +83,23 @@ static char *dss_cache_str(ssh_key *key)
     return strbuf_to_str(sb);
 }
 
+static key_components *dss_components(ssh_key *key)
+{
+    struct dss_key *dss = container_of(key, struct dss_key, sshk);
+    key_components *kc = key_components_new();
+
+    key_components_add_text(kc, "key_type", "DSA");
+    assert(dss->p);
+    key_components_add_mp(kc, "p", dss->p);
+    key_components_add_mp(kc, "q", dss->q);
+    key_components_add_mp(kc, "g", dss->g);
+    key_components_add_mp(kc, "public_y", dss->y);
+    if (dss->x)
+        key_components_add_mp(kc, "private_x", dss->x);
+
+    return kc;
+}
+
 static char *dss_invalid(ssh_key *key, unsigned flags)
 {
     /* No validity criterion will stop us from using a DSA key at all */
@@ -399,12 +416,12 @@ mp_int *dss_gen_k(const char *id_string, mp_int *modulus,
     h = ssh_hash_new(&ssh_sha512);
     put_asciz(h, id_string);
     put_mp_ssh2(h, private_key);
-    ssh_hash_final(h, digest512);
+    ssh_hash_digest(h, digest512);
 
     /*
      * Now hash that digest plus the message hash.
      */
-    h = ssh_hash_new(&ssh_sha512);
+    ssh_hash_reset(h);
     put_data(h, digest512, sizeof(digest512));
     put_data(h, digest, digest_len);
     ssh_hash_final(h, digest512);
@@ -478,6 +495,7 @@ const ssh_keyalg ssh_dss = {
     dss_private_blob,
     dss_openssh_blob,
     dss_cache_str,
+    dss_components,
 
     dss_pubkey_bits,
 

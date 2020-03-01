@@ -37,7 +37,7 @@ static void c_write(Rlogin *rlogin, const void *buf, size_t len)
     sk_set_frozen(rlogin->s, backlog > RLOGIN_MAX_BACKLOG);
 }
 
-static void rlogin_log(Plug *plug, int type, SockAddr *addr, int port,
+static void rlogin_log(Plug *plug, PlugLogType type, SockAddr *addr, int port,
                        const char *error_msg, int error_code)
 {
     Rlogin *rlogin = container_of(plug, Rlogin, plug);
@@ -153,10 +153,10 @@ static const PlugVtable Rlogin_plugvt = {
  * Also places the canonical host name into `realhost'. It must be
  * freed by the caller.
  */
-static const char *rlogin_init(Seat *seat, Backend **backend_handle,
-                               LogContext *logctx, Conf *conf,
-                               const char *host, int port, char **realhost,
-                               bool nodelay, bool keepalive)
+static const char *rlogin_init(const BackendVtable *vt, Seat *seat,
+                               Backend **backend_handle, LogContext *logctx,
+                               Conf *conf, const char *host, int port,
+                               char **realhost, bool nodelay, bool keepalive)
 {
     SockAddr *addr;
     const char *err;
@@ -167,7 +167,7 @@ static const char *rlogin_init(Seat *seat, Backend **backend_handle,
 
     rlogin = snew(Rlogin);
     rlogin->plug.vt = &Rlogin_plugvt;
-    rlogin->backend.vt = &rlogin_backend;
+    rlogin->backend.vt = vt;
     rlogin->s = NULL;
     rlogin->closed_on_socket_error = false;
     rlogin->seat = seat;
@@ -237,7 +237,8 @@ static const char *rlogin_init(Seat *seat, Backend **backend_handle,
         if (ret >= 0) {
             /* Next terminal output will come from server */
             seat_set_trust_status(rlogin->seat, false);
-            rlogin_startup(rlogin, rlogin->prompt->prompts[0]->result);
+            rlogin_startup(rlogin, prompt_get_result_ref(
+                               rlogin->prompt->prompts[0]));
         }
     }
 
@@ -286,7 +287,8 @@ static size_t rlogin_send(Backend *be, const char *buf, size_t len)
         if (ret >= 0) {
             /* Next terminal output will come from server */
             seat_set_trust_status(rlogin->seat, false);
-            rlogin_startup(rlogin, rlogin->prompt->prompts[0]->result);
+            rlogin_startup(rlogin, prompt_get_result_ref(
+                               rlogin->prompt->prompts[0]));
             /* that nulls out rlogin->prompt, so then we'll start sending
              * data down the wire in the obvious way */
         }
@@ -420,7 +422,7 @@ const struct BackendVtable rlogin_backend = {
     rlogin_unthrottle,
     rlogin_cfg_info,
     NULL /* test_for_upstream */,
-    "rlogin",
+    "rlogin", "Rlogin",
     PROT_RLOGIN,
     513
 };

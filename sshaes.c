@@ -85,7 +85,7 @@
  * vtables: one for the pure software implementation, one using
  * hardware acceleration (if available), and a top-level one which is
  * never actually instantiated, and only contains a new() method whose
- * job is to decide whihc of the other two to return an actual
+ * job is to decide which of the other two to return an actual
  * instance of.
  */
 
@@ -123,7 +123,7 @@ struct aes_extra {
         pid, 16, bits, bits/8, flags, name HW_NAME_SUFFIX,              \
         NULL, NULL };                                                   \
                                                                         \
-    const struct aes_extra extra_##cid = {                              \
+    static const struct aes_extra extra_##cid = {                       \
         &ssh_##cid##_sw, &ssh_##cid##_hw };                             \
                                                                         \
     const ssh_cipheralg ssh_##cid = {                                   \

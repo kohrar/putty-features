@@ -25,6 +25,7 @@
 
 #include "putty.h"
 #include "ssh.h"
+#include "sshserver.h" /* to check the prototypes of server-needed things */
 #include "tree234.h"
 
 #ifndef OMIT_UTMP
@@ -1134,7 +1135,7 @@ Backend *pty_backend_create(
             for (val = conf_get_str_strs(conf, CONF_environmt, NULL, &key);
                  val != NULL;
                  val = conf_get_str_strs(conf, CONF_environmt, key, &key)) {
-                char *varval = dupcat(key, "=", val, NULL);
+                char *varval = dupcat(key, "=", val);
                 putenv(varval);
                 /*
                  * We must not free varval, since putenv links it
@@ -1267,9 +1268,9 @@ Backend *pty_backend_create(
  * it gets the argv array from the global variable pty_argv, expecting
  * that it will have been invoked by pterm.
  */
-static const char *pty_init(Seat *seat, Backend **backend_handle,
-                            LogContext *logctx, Conf *conf,
-                            const char *host, int port,
+static const char *pty_init(const BackendVtable *vt, Seat *seat,
+                            Backend **backend_handle, LogContext *logctx,
+                            Conf *conf, const char *host, int port,
                             char **realhost, bool nodelay, bool keepalive)
 {
     const char *cmd = NULL;
@@ -1280,7 +1281,8 @@ static const char *pty_init(Seat *seat, Backend **backend_handle,
     if (pty_argv && pty_argv[0] && !pty_argv[1])
         cmd = pty_argv[0];
 
-    *backend_handle= pty_backend_create(
+    assert(vt == &pty_backend);
+    *backend_handle = pty_backend_create(
         seat, logctx, conf, pty_argv, cmd, modes, false, NULL, NULL);
     *realhost = dupstr("");
     return NULL;
@@ -1561,52 +1563,16 @@ ptrlen pty_backend_exit_signame(Backend *be, char **aux_msg)
     if (sig < 0)
         return PTRLEN_LITERAL("");
 
-#define TRANSLATE_SIGNAL(s) do                          \
-    {                                                   \
+    #define SIGNAL_SUB(s) {                             \
         if (sig == SIG ## s)                            \
             return PTRLEN_LITERAL(#s);                  \
-    } while (0)
-
-#ifdef SIGABRT
-    TRANSLATE_SIGNAL(ABRT);
-#endif
-#ifdef SIGALRM
-    TRANSLATE_SIGNAL(ALRM);
-#endif
-#ifdef SIGFPE
-    TRANSLATE_SIGNAL(FPE);
-#endif
-#ifdef SIGHUP
-    TRANSLATE_SIGNAL(HUP);
-#endif
-#ifdef SIGILL
-    TRANSLATE_SIGNAL(ILL);
-#endif
-#ifdef SIGINT
-    TRANSLATE_SIGNAL(INT);
-#endif
-#ifdef SIGKILL
-    TRANSLATE_SIGNAL(KILL);
-#endif
-#ifdef SIGPIPE
-    TRANSLATE_SIGNAL(PIPE);
-#endif
-#ifdef SIGQUIT
-    TRANSLATE_SIGNAL(QUIT);
-#endif
-#ifdef SIGSEGV
-    TRANSLATE_SIGNAL(SEGV);
-#endif
-#ifdef SIGTERM
-    TRANSLATE_SIGNAL(TERM);
-#endif
-#ifdef SIGUSR1
-    TRANSLATE_SIGNAL(USR1);
-#endif
-#ifdef SIGUSR2
-    TRANSLATE_SIGNAL(USR2);
-#endif
-#undef TRANSLATE_SIGNAL
+    }
+    #define SIGNAL_MAIN(s, desc) SIGNAL_SUB(s)
+    #define SIGNALS_LOCAL_ONLY
+    #include "sshsignals.h"
+    #undef SIGNAL_MAIN
+    #undef SIGNAL_SUB
+    #undef SIGNALS_LOCAL_ONLY
 
     *aux_msg = dupprintf("untranslatable signal number %d: %s",
                          sig, strsignal(sig));
@@ -1636,7 +1602,7 @@ const struct BackendVtable pty_backend = {
     pty_unthrottle,
     pty_cfg_info,
     NULL /* test_for_upstream */,
-    "pty",
+    "pty", "pty",
     -1,
     0
 };

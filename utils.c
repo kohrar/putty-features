@@ -182,10 +182,21 @@ int main(void)
     printf("passed %d failed %d total %d\n", passes, fails, passes+fails);
     return fails != 0 ? 1 : 0;
 }
+
 /* Stubs to stop the rest of this module causing compile failures. */
-void modalfatalbox(const char *fmt, ...) {}
-int conf_get_int(Conf *conf, int primary) { return 0; }
-char *conf_get_str(Conf *conf, int primary) { return NULL; }
+static NORETURN void fatal_error(const char *p, ...)
+{
+    va_list ap;
+    fprintf(stderr, "host_string_test: ");
+    va_start(ap, p);
+    vfprintf(stderr, p, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    exit(1);
+}
+
+void out_of_memory(void) { fatal_error("out of memory"); }
+
 #endif /* TEST_HOST_STRFOO */
 
 /*
@@ -249,7 +260,7 @@ char *dupstr(const char *s)
 }
 
 /* Allocate the concatenation of N strings. Terminate arg list with NULL. */
-char *dupcat(const char *s1, ...)
+char *dupcat_fn(const char *s1, ...)
 {
     int len;
     char *p, *q, *sn;
@@ -416,6 +427,29 @@ void *strbuf_append(strbuf *buf_o, size_t len)
     buf->visible.len += len;
     buf->visible.s[buf->visible.len] = '\0';
     return toret;
+}
+
+void strbuf_shrink_to(strbuf *buf, size_t new_len)
+{
+    assert(new_len <= buf->len);
+    buf->len = new_len;
+    buf->s[buf->len] = '\0';
+}
+
+void strbuf_shrink_by(strbuf *buf, size_t amount_to_remove)
+{
+    assert(amount_to_remove <= buf->len);
+    buf->len -= amount_to_remove;
+    buf->s[buf->len] = '\0';
+}
+
+bool strbuf_chomp(strbuf *buf, char char_to_remove)
+{
+    if (buf->len > 0 && buf->s[buf->len-1] == char_to_remove) {
+        strbuf_shrink_by(buf, 1);
+        return true;
+    }
+    return false;
 }
 
 static void strbuf_BinarySink_write(
@@ -985,7 +1019,7 @@ char *mkstr(ptrlen pl)
 
 bool strstartswith(const char *s, const char *t)
 {
-    return !memcmp(s, t, strlen(t));
+    return !strncmp(s, t, strlen(t));
 }
 
 bool strendswith(const char *s, const char *t)
@@ -1014,4 +1048,28 @@ size_t encode_utf8(void *output, unsigned long ch)
         *p++ = 0x80 | (ch & 0x3F);
     }
     return p - start;
+}
+
+void write_c_string_literal(FILE *fp, ptrlen str)
+{
+    for (const char *p = str.ptr; p < (const char *)str.ptr + str.len; p++) {
+        char c = *p;
+
+        if (c == '\n')
+            fputs("\\n", fp);
+        else if (c == '\r')
+            fputs("\\r", fp);
+        else if (c == '\t')
+            fputs("\\t", fp);
+        else if (c == '\b')
+            fputs("\\b", fp);
+        else if (c == '\\')
+            fputs("\\\\", fp);
+        else if (c == '"')
+            fputs("\\\"", fp);
+        else if (c >= 32 && c <= 126)
+            fputc(c, fp);
+        else
+            fprintf(fp, "\\%03o", (unsigned char)c);
+    }
 }

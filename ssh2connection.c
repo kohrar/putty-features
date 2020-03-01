@@ -30,6 +30,7 @@ static const struct PacketProtocolLayerVtable ssh2_connection_vtable = {
     ssh2_connection_want_user_input,
     ssh2_connection_got_user_input,
     ssh2_connection_reconfigure,
+    ssh_ppl_default_queued_data_size,
     "ssh-connection",
 };
 
@@ -515,19 +516,18 @@ static bool ssh2_connection_filter_queue(struct ssh2_connection_state *s)
                     ssh2_channel_try_eof(c); /* in case we had a pending EOF */
                 break;
 
-              case SSH2_MSG_CHANNEL_OPEN_FAILURE:
+              case SSH2_MSG_CHANNEL_OPEN_FAILURE: {
                 assert(c->halfopen);
 
-                {
-                    char *err = ssh2_channel_open_failure_error_text(pktin);
-                    chan_open_failed(c->chan, err);
-                    sfree(err);
-                }
+                char *err = ssh2_channel_open_failure_error_text(pktin);
+                chan_open_failed(c->chan, err);
+                sfree(err);
 
                 del234(s->channels, c);
                 ssh2_channel_free(c);
 
                 break;
+              }
 
               case SSH2_MSG_CHANNEL_DATA:
               case SSH2_MSG_CHANNEL_EXTENDED_DATA:
@@ -750,7 +750,8 @@ static bool ssh2_connection_filter_queue(struct ssh2_connection_state *s)
                         "Received %s for channel %d with no outstanding "
                         "channel request",
                         ssh2_pkt_type(s->ppl.bpp->pls->kctx,
-                                      s->ppl.bpp->pls->actx, pktin->type));
+                                      s->ppl.bpp->pls->actx, pktin->type),
+                        c->localid);
                     return true;
                 }
                 ocr->handler(c, pktin, ocr->ctx);

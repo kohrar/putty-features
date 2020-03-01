@@ -580,7 +580,7 @@ static void do_telnet_read(Telnet *telnet, const char *buf, size_t len)
             break;
           case SEENSB:
             telnet->sb_opt = c;
-            telnet->sb_buf->len = 0;
+            strbuf_clear(telnet->sb_buf);
             telnet->state = SUBNEGOT;
             break;
           case SUBNEGOT:
@@ -604,7 +604,7 @@ static void do_telnet_read(Telnet *telnet, const char *buf, size_t len)
 
         if (outbuf->len >= 4096) {
             c_write(telnet, outbuf->u, outbuf->len);
-            outbuf->len = 0;
+            strbuf_clear(outbuf);
         }
     }
 
@@ -613,7 +613,7 @@ static void do_telnet_read(Telnet *telnet, const char *buf, size_t len)
     strbuf_free(outbuf);
 }
 
-static void telnet_log(Plug *plug, int type, SockAddr *addr, int port,
+static void telnet_log(Plug *plug, PlugLogType type, SockAddr *addr, int port,
                        const char *error_msg, int error_code)
 {
     Telnet *telnet = container_of(plug, Telnet, plug);
@@ -678,9 +678,9 @@ static const PlugVtable Telnet_plugvt = {
  * Also places the canonical host name into `realhost'. It must be
  * freed by the caller.
  */
-static const char *telnet_init(Seat *seat, Backend **backend_handle,
-                               LogContext *logctx, Conf *conf,
-                               const char *host, int port,
+static const char *telnet_init(const BackendVtable *vt, Seat *seat,
+                               Backend **backend_handle, LogContext *logctx,
+                               Conf *conf, const char *host, int port,
                                char **realhost, bool nodelay, bool keepalive)
 {
     SockAddr *addr;
@@ -694,7 +694,7 @@ static const char *telnet_init(Seat *seat, Backend **backend_handle,
 
     telnet = snew(Telnet);
     telnet->plug.vt = &Telnet_plugvt;
-    telnet->backend.vt = &telnet_backend;
+    telnet->backend.vt = vt;
     telnet->conf = conf_copy(conf);
     telnet->s = NULL;
     telnet->closed_on_socket_error = false;
@@ -1064,7 +1064,7 @@ const struct BackendVtable telnet_backend = {
     telnet_unthrottle,
     telnet_cfg_info,
     NULL /* test_for_upstream */,
-    "telnet",
+    "telnet", "Telnet",
     PROT_TELNET,
     23
 };

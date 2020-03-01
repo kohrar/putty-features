@@ -150,19 +150,20 @@ static void SHA512_Block(SHA512_State *s, uint64_t *block) {
     for (t = 0; t < 80; t+=8) {
         uint64_t tmp, p, q, r;
 
-#define ROUND(j,a,b,c,d,e,f,g,h) \
-        bigsigma1(p, tmp, e); \
-        Ch(q, tmp, e, f, g); \
-        add(r, p, q); \
-        add(p, r, k[j]) ; \
-        add(q, p, w[j]); \
-        add(r, q, h); \
-        bigsigma0(p, tmp, a); \
-        Maj(tmp, q, a, b, c); \
-        add(q, tmp, p); \
-        add(p, r, d); \
-        d = p; \
-        add(h, q, r);
+#define ROUND(j,a,b,c,d,e,f,g,h) do {           \
+            bigsigma1(p, tmp, e);               \
+            Ch(q, tmp, e, f, g);                \
+            add(r, p, q);                       \
+            add(p, r, k[j]) ;                   \
+            add(q, p, w[j]);                    \
+            add(r, q, h);                       \
+            bigsigma0(p, tmp, a);               \
+            Maj(tmp, q, a, b, c);               \
+            add(q, tmp, p);                     \
+            add(p, r, d);                       \
+            d = p;                              \
+            add(h, q, r);                       \
+        } while (0)
 
         ROUND(t+0, a,b,c,d,e,f,g,h);
         ROUND(t+1, h,a,b,c,d,e,f,g);
@@ -193,14 +194,14 @@ static void SHA512_Block(SHA512_State *s, uint64_t *block) {
 static void SHA512_BinarySink_write(BinarySink *bs,
                                     const void *p, size_t len);
 
-void SHA512_Init(SHA512_State *s) {
+static void SHA512_Init(SHA512_State *s) {
     SHA512_Core_Init(s);
     s->blkused = 0;
     s->lenhi = s->lenlo = 0;
     BinarySink_INIT(s, SHA512_BinarySink_write);
 }
 
-void SHA384_Init(SHA512_State *s) {
+static void SHA384_Init(SHA512_State *s) {
     SHA384_Core_Init(s);
     s->blkused = 0;
     s->lenhi = s->lenlo = 0;
@@ -246,7 +247,7 @@ static void SHA512_BinarySink_write(BinarySink *bs,
     }
 }
 
-void SHA512_Final(SHA512_State *s, unsigned char *digest) {
+static void SHA512_Final(SHA512_State *s, unsigned char *digest) {
     int i;
     int pad;
     unsigned char c[BLKSIZE];
@@ -271,28 +272,10 @@ void SHA512_Final(SHA512_State *s, unsigned char *digest) {
         PUT_64BIT_MSB_FIRST(digest + i*8, s->h[i]);
 }
 
-void SHA384_Final(SHA512_State *s, unsigned char *digest) {
+static void SHA384_Final(SHA512_State *s, unsigned char *digest) {
     unsigned char biggerDigest[512 / 8];
     SHA512_Final(s, biggerDigest);
     memcpy(digest, biggerDigest, 384 / 8);
-}
-
-void SHA512_Simple(const void *p, int len, unsigned char *output) {
-    SHA512_State s;
-
-    SHA512_Init(&s);
-    put_data(&s, p, len);
-    SHA512_Final(&s, output);
-    smemclr(&s, sizeof(s));
-}
-
-void SHA384_Simple(const void *p, int len, unsigned char *output) {
-    SHA512_State s;
-
-    SHA384_Init(&s);
-    put_data(&s, p, len);
-    SHA384_Final(&s, output);
-    smemclr(&s, sizeof(s));
 }
 
 /*
@@ -307,24 +290,24 @@ struct sha512_hash {
 static ssh_hash *sha512_new(const ssh_hashalg *alg)
 {
     struct sha512_hash *h = snew(struct sha512_hash);
-    SHA512_Init(&h->state);
     h->hash.vt = alg;
     BinarySink_DELEGATE_INIT(&h->hash, &h->state);
-    return &h->hash;
+    return ssh_hash_reset(&h->hash);
 }
 
-static ssh_hash *sha512_copy(ssh_hash *hashold)
+static void sha512_reset(ssh_hash *hash)
 {
-    struct sha512_hash *hold, *hnew;
-    ssh_hash *hashnew = sha512_new(hashold->vt);
+    struct sha512_hash *h = container_of(hash, struct sha512_hash, hash);
+    SHA512_Init(&h->state);
+}
 
-    hold = container_of(hashold, struct sha512_hash, hash);
-    hnew = container_of(hashnew, struct sha512_hash, hash);
+static void sha512_copyfrom(ssh_hash *hashnew, ssh_hash *hashold)
+{
+    struct sha512_hash *hold = container_of(hashold, struct sha512_hash, hash);
+    struct sha512_hash *hnew = container_of(hashnew, struct sha512_hash, hash);
 
     hnew->state = hold->state;
     BinarySink_COPIED(&hnew->state);
-
-    return hashnew;
 }
 
 static void sha512_free(ssh_hash *hash)
@@ -335,35 +318,30 @@ static void sha512_free(ssh_hash *hash)
     sfree(h);
 }
 
-static void sha512_final(ssh_hash *hash, unsigned char *output)
+static void sha512_digest(ssh_hash *hash, unsigned char *output)
 {
     struct sha512_hash *h = container_of(hash, struct sha512_hash, hash);
     SHA512_Final(&h->state, output);
-    sha512_free(hash);
 }
 
 const ssh_hashalg ssh_sha512 = {
-    sha512_new, sha512_copy, sha512_final, sha512_free,
+    sha512_new, sha512_reset, sha512_copyfrom, sha512_digest, sha512_free,
     64, BLKSIZE, HASHALG_NAMES_BARE("SHA-512"),
 };
 
-static ssh_hash *sha384_new(const ssh_hashalg *alg)
+static void sha384_reset(ssh_hash *hash)
 {
-    struct sha512_hash *h = snew(struct sha512_hash);
+    struct sha512_hash *h = container_of(hash, struct sha512_hash, hash);
     SHA384_Init(&h->state);
-    h->hash.vt = alg;
-    BinarySink_DELEGATE_INIT(&h->hash, &h->state);
-    return &h->hash;
 }
 
-static void sha384_final(ssh_hash *hash, unsigned char *output)
+static void sha384_digest(ssh_hash *hash, unsigned char *output)
 {
     struct sha512_hash *h = container_of(hash, struct sha512_hash, hash);
     SHA384_Final(&h->state, output);
-    sha512_free(hash);
 }
 
 const ssh_hashalg ssh_sha384 = {
-    sha384_new, sha512_copy, sha384_final, sha512_free,
+    sha512_new, sha384_reset, sha512_copyfrom, sha384_digest, sha512_free,
     48, BLKSIZE, HASHALG_NAMES_BARE("SHA-384"),
 };

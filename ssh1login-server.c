@@ -65,6 +65,7 @@ static const struct PacketProtocolLayerVtable ssh1_login_server_vtable = {
     ssh1_login_server_want_user_input,
     ssh1_login_server_got_user_input,
     ssh1_login_server_reconfigure,
+    ssh_ppl_default_queued_data_size,
     NULL /* no layer names in SSH-1 */,
 };
 
@@ -218,7 +219,7 @@ static void ssh1_login_server_process_queue(PacketProtocolLayer *ppl)
         if (rsa_ssh1_decrypt_pkcs1(s->sesskey, larger, data)) {
             mp_free(s->sesskey);
             s->sesskey = mp_from_bytes_be(ptrlen_from_strbuf(data));
-            data->len = 0;
+            strbuf_clear(data);
             if (rsa_ssh1_decrypt_pkcs1(s->sesskey, smaller, data) &&
                 data->len == sizeof(s->session_key)) {
                 memcpy(s->session_key, data->u, sizeof(s->session_key));

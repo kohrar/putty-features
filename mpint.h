@@ -271,6 +271,25 @@ mp_int *mp_invert_mod_2to(mp_int *x, size_t p);
 mp_int *mp_invert(mp_int *x, mp_int *modulus);
 
 /*
+ * Greatest common divisor.
+ *
+ * mp_gcd_into also returns a pair of Bezout coefficients, namely A,B
+ * such that a*A - b*B = gcd. (The minus sign is so that both returned
+ * coefficients can be positive.)
+ *
+ * You can pass any of mp_gcd_into's output pointers as NULL if you
+ * don't need that output value.
+ *
+ * mp_gcd is a wrapper with a less cumbersome API, for the case where
+ * the only output value you need is the gcd itself. mp_coprime is
+ * even easier, if all you care about is whether or not that gcd is 1.
+ */
+mp_int *mp_gcd(mp_int *a, mp_int *b);
+void mp_gcd_into(mp_int *a, mp_int *b,
+                 mp_int *gcd_out, mp_int *A_out, mp_int *B_out);
+unsigned mp_coprime(mp_int *a, mp_int *b);
+
+/*
  * System for taking square roots modulo an odd prime.
  *
  * In order to do this efficiently, you need to provide an extra piece
@@ -360,10 +379,17 @@ mp_int *mp_modadd(mp_int *x, mp_int *y, mp_int *modulus);
 mp_int *mp_modsub(mp_int *x, mp_int *y, mp_int *modulus);
 
 /*
- * Shift an mp_int right by a given number of bits. The shift count is
+ * Shift an mp_int by a given number of bits. The shift count is
  * considered to be secret data, and as a result, the algorithm takes
  * O(n log n) time instead of the obvious O(n).
+ *
+ * There's no mp_lshift_safe, because the size of mp_int to allocate
+ * would not be able to avoid depending on the shift count. So if you
+ * need to behave independently of the size of a left shift, you have
+ * to know a bound on the space you'll need by some other means.
  */
+void mp_lshift_safe_into(mp_int *r, mp_int *x, size_t shift);
+void mp_rshift_safe_into(mp_int *r, mp_int *x, size_t shift);
 mp_int *mp_rshift_safe(mp_int *x, size_t shift);
 
 /*
@@ -376,6 +402,7 @@ mp_int *mp_rshift_safe(mp_int *x, size_t shift);
  */
 void mp_lshift_fixed_into(mp_int *r, mp_int *a, size_t shift);
 void mp_rshift_fixed_into(mp_int *r, mp_int *x, size_t shift);
+mp_int *mp_lshift_fixed(mp_int *x, size_t shift);
 mp_int *mp_rshift_fixed(mp_int *x, size_t shift);
 
 /*
@@ -391,13 +418,16 @@ mp_int *mp_rshift_fixed(mp_int *x, size_t shift);
  * then _they_ have link-time dependencies on both modules.)
  *
  * mp_random_bits[_fn] returns an integer 0 <= n < 2^bits.
+ * mp_random_upto[_fn](limit) returns an integer 0 <= n < limit.
  * mp_random_in_range[_fn](lo,hi) returns an integer lo <= n < hi.
  */
 typedef void (*random_read_fn_t)(void *, size_t);
 mp_int *mp_random_bits_fn(size_t bits, random_read_fn_t randfn);
+mp_int *mp_random_upto_fn(mp_int *limit, random_read_fn_t randfn);
 mp_int *mp_random_in_range_fn(
     mp_int *lo_inclusive, mp_int *hi_exclusive, random_read_fn_t randfn);
 #define mp_random_bits(bits) mp_random_bits_fn(bits, random_read)
+#define mp_random_upto(limit) mp_random_upto_fn(limit, random_read)
 #define mp_random_in_range(lo, hi) mp_random_in_range_fn(lo, hi, random_read)
 
 #endif /* PUTTY_MPINT_H */

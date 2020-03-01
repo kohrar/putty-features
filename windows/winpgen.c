@@ -7,8 +7,6 @@
 #include <stdlib.h>
 #include <assert.h>
 
-#define PUTTY_DO_GLOBALS
-
 #include "putty.h"
 #include "ssh.h"
 #include "licence.h"
@@ -102,20 +100,19 @@ static void progress_update(void *param, int action, int phase, int iprogress)
       case PROGFN_PHASE_EXTENT:
         p->phases[phase-1].total = progress;
         break;
-      case PROGFN_READY:
-        {
-            unsigned total = 0;
-            int i;
-            for (i = 0; i < p->nphases; i++) {
-                p->phases[i].startpoint = total;
-                total += p->phases[i].total;
-            }
-            p->total = total;
-            p->divisor = ((p->total + PROGRESSRANGE - 1) / PROGRESSRANGE);
-            p->range = p->total / p->divisor;
-            SendMessage(p->progbar, PBM_SETRANGE, 0, MAKELPARAM(0, p->range));
+      case PROGFN_READY: {
+        unsigned total = 0;
+        int i;
+        for (i = 0; i < p->nphases; i++) {
+          p->phases[i].startpoint = total;
+          total += p->phases[i].total;
         }
+        p->total = total;
+        p->divisor = ((p->total + PROGRESSRANGE - 1) / PROGRESSRANGE);
+        p->range = p->total / p->divisor;
+        SendMessage(p->progbar, PBM_SETRANGE, 0, MAKELPARAM(0, p->range));
         break;
+      }
       case PROGFN_PROGRESS:
         if (p->phases[phase-1].exponential) {
             while (p->phases[phase-1].n < progress) {
@@ -238,24 +235,23 @@ static INT_PTR CALLBACK LicenceProc(HWND hwnd, UINT msg,
                                 WPARAM wParam, LPARAM lParam)
 {
     switch (msg) {
-      case WM_INITDIALOG:
+      case WM_INITDIALOG: {
         /*
          * Centre the window.
          */
-        {                              /* centre the window */
-            RECT rs, rd;
-            HWND hw;
+        RECT rs, rd;
+        HWND hw;
 
-            hw = GetDesktopWindow();
-            if (GetWindowRect(hw, &rs) && GetWindowRect(hwnd, &rd))
-                MoveWindow(hwnd,
-                           (rs.right + rs.left + rd.left - rd.right) / 2,
-                           (rs.bottom + rs.top + rd.top - rd.bottom) / 2,
-                           rd.right - rd.left, rd.bottom - rd.top, true);
-        }
+        hw = GetDesktopWindow();
+        if (GetWindowRect(hw, &rs) && GetWindowRect(hwnd, &rd))
+            MoveWindow(hwnd,
+                       (rs.right + rs.left + rd.left - rd.right) / 2,
+                       (rs.bottom + rs.top + rd.top - rd.bottom) / 2,
+                       rd.right - rd.left, rd.bottom - rd.top, true);
 
         SetDlgItemText(hwnd, 1000, LICENCE_TEXT("\r\n\r\n"));
         return 1;
+      }
       case WM_COMMAND:
         switch (LOWORD(wParam)) {
           case IDOK:
@@ -365,7 +361,7 @@ static DWORD WINAPI generate_key_thread(void *param)
         ecdsa_generate(params->eckey, params->curve_bits,
                        progress_update, &prog);
     else if (params->keytype == ED25519)
-        eddsa_generate(params->edkey, 256, progress_update, &prog);
+        eddsa_generate(params->edkey, 255, progress_update, &prog);
     else
         rsa_generate(params->key, params->key_bits, progress_update, &prog);
 
@@ -657,7 +653,7 @@ void load_key_file(HWND hwnd, struct MainDlgState *state,
         !import_possible(type)) {
         char *msg = dupprintf("Couldn't load private key (%s)",
                               key_type_to_str(type));
-        message_box(msg, "PuTTYgen Error", MB_OK | MB_ICONERROR,
+        message_box(hwnd, msg, "PuTTYgen Error", MB_OK | MB_ICONERROR,
                     HELPCTXID(errors_cantloadkey));
         sfree(msg);
         return;
@@ -672,9 +668,9 @@ void load_key_file(HWND hwnd, struct MainDlgState *state,
     comment = NULL;
     passphrase = NULL;
     if (realtype == SSH_KEYTYPE_SSH1)
-        needs_pass = rsa_ssh1_encrypted(filename, &comment);
+        needs_pass = rsa1_encrypted_f(filename, &comment);
     else if (realtype == SSH_KEYTYPE_SSH2)
-        needs_pass = ssh2_userkey_encrypted(filename, &comment);
+        needs_pass = ppk_encrypted_f(filename, &comment);
     else
         needs_pass = import_encrypted(filename, realtype, &comment);
     do {
@@ -699,14 +695,13 @@ void load_key_file(HWND hwnd, struct MainDlgState *state,
             passphrase = dupstr("");
         if (type == SSH_KEYTYPE_SSH1) {
             if (realtype == type)
-                ret = rsa_ssh1_loadkey(
-                    filename, &newkey1, passphrase, &errmsg);
+                ret = rsa1_load_f(filename, &newkey1, passphrase, &errmsg);
             else
                 ret = import_ssh1(filename, realtype, &newkey1,
                                   passphrase, &errmsg);
         } else {
             if (realtype == type)
-                newkey2 = ssh2_load_userkey(filename, passphrase, &errmsg);
+                newkey2 = ppk_load_f(filename, passphrase, &errmsg);
             else
                 newkey2 = import_ssh2(filename, realtype, passphrase, &errmsg);
             if (newkey2 == SSH2_WRONG_PASSPHRASE)
@@ -721,7 +716,7 @@ void load_key_file(HWND hwnd, struct MainDlgState *state,
         sfree(comment);
     if (ret == 0) {
         char *msg = dupprintf("Couldn't load private key (%s)", errmsg);
-        message_box(msg, "PuTTYgen Error", MB_OK | MB_ICONERROR,
+        message_box(hwnd, msg, "PuTTYgen Error", MB_OK | MB_ICONERROR,
                     HELPCTXID(errors_cantloadkey));
         sfree(msg);
     } else if (ret == 1) {
@@ -1060,13 +1055,12 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwnd, UINT msg,
           case IDC_KEYSSH2RSA:
           case IDC_KEYSSH2DSA:
           case IDC_KEYSSH2ECDSA:
-          case IDC_KEYSSH2ED25519:
-            {
-                state = (struct MainDlgState *)
-                    GetWindowLongPtr(hwnd, GWLP_USERDATA);
-                ui_set_key_type(hwnd, state, LOWORD(wParam));
-            }
+          case IDC_KEYSSH2ED25519: {
+            state = (struct MainDlgState *)
+                GetWindowLongPtr(hwnd, GWLP_USERDATA);
+            ui_set_key_type(hwnd, state, LOWORD(wParam));
             break;
+          }
           case IDC_QUIT:
             PostMessage(hwnd, WM_CLOSE, 0, 0);
             break;
@@ -1309,9 +1303,8 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwnd, UINT msg,
                             ret = export_ssh2(fn, type, &state->ssh2key,
                                               *passphrase ? passphrase : NULL);
                         else
-                            ret = ssh2_save_userkey(fn, &state->ssh2key,
-                                                    *passphrase ? passphrase :
-                                                    NULL);
+                            ret = ppk_save_f(fn, &state->ssh2key,
+                                             *passphrase ? passphrase : NULL);
                         filename_free(fn);
                     } else {
                         Filename *fn = filename_from_str(filename);
@@ -1319,9 +1312,8 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwnd, UINT msg,
                             ret = export_ssh1(fn, type, &state->key,
                                               *passphrase ? passphrase : NULL);
                         else
-                            ret = rsa_ssh1_savekey(
-                                fn, &state->key,
-                                *passphrase ? passphrase : NULL);
+                            ret = rsa1_save_f(fn, &state->key,
+                                              *passphrase ? passphrase : NULL);
                         filename_free(fn);
                     }
                     if (ret <= 0) {
@@ -1483,61 +1475,60 @@ static INT_PTR CALLBACK MainDlgProc(HWND hwnd, UINT msg,
          */
         ui_set_state(hwnd, state, 2);
         break;
-      case WM_HELP:
-        {
-            int id = ((LPHELPINFO)lParam)->iCtrlId;
-            const char *topic = NULL;
-            switch (id) {
-              case IDC_GENERATING:
-              case IDC_PROGRESS:
-              case IDC_GENSTATIC:
-              case IDC_GENERATE:
-                topic = WINHELP_CTX_puttygen_generate; break;
-              case IDC_PKSTATIC:
-              case IDC_KEYDISPLAY:
-                topic = WINHELP_CTX_puttygen_pastekey; break;
-              case IDC_FPSTATIC:
-              case IDC_FINGERPRINT:
-                topic = WINHELP_CTX_puttygen_fingerprint; break;
-              case IDC_COMMENTSTATIC:
-              case IDC_COMMENTEDIT:
-                topic = WINHELP_CTX_puttygen_comment; break;
-              case IDC_PASSPHRASE1STATIC:
-              case IDC_PASSPHRASE1EDIT:
-              case IDC_PASSPHRASE2STATIC:
-              case IDC_PASSPHRASE2EDIT:
-                topic = WINHELP_CTX_puttygen_passphrase; break;
-              case IDC_LOADSTATIC:
-              case IDC_LOAD:
-                topic = WINHELP_CTX_puttygen_load; break;
-              case IDC_SAVESTATIC:
-              case IDC_SAVE:
-                topic = WINHELP_CTX_puttygen_savepriv; break;
-              case IDC_SAVEPUB:
-                topic = WINHELP_CTX_puttygen_savepub; break;
-              case IDC_TYPESTATIC:
-              case IDC_KEYSSH1:
-              case IDC_KEYSSH2RSA:
-              case IDC_KEYSSH2DSA:
-              case IDC_KEYSSH2ECDSA:
-              case IDC_KEYSSH2ED25519:
-                topic = WINHELP_CTX_puttygen_keytype; break;
-              case IDC_BITSSTATIC:
-              case IDC_BITS:
-                topic = WINHELP_CTX_puttygen_bits; break;
-              case IDC_IMPORT:
-              case IDC_EXPORT_OPENSSH_AUTO:
-              case IDC_EXPORT_OPENSSH_NEW:
-              case IDC_EXPORT_SSHCOM:
-                topic = WINHELP_CTX_puttygen_conversions; break;
-            }
-            if (topic) {
-                launch_help(hwnd, topic);
-            } else {
-                MessageBeep(0);
-            }
+      case WM_HELP: {
+        int id = ((LPHELPINFO)lParam)->iCtrlId;
+        const char *topic = NULL;
+        switch (id) {
+          case IDC_GENERATING:
+          case IDC_PROGRESS:
+          case IDC_GENSTATIC:
+          case IDC_GENERATE:
+            topic = WINHELP_CTX_puttygen_generate; break;
+          case IDC_PKSTATIC:
+          case IDC_KEYDISPLAY:
+            topic = WINHELP_CTX_puttygen_pastekey; break;
+          case IDC_FPSTATIC:
+          case IDC_FINGERPRINT:
+            topic = WINHELP_CTX_puttygen_fingerprint; break;
+          case IDC_COMMENTSTATIC:
+          case IDC_COMMENTEDIT:
+            topic = WINHELP_CTX_puttygen_comment; break;
+          case IDC_PASSPHRASE1STATIC:
+          case IDC_PASSPHRASE1EDIT:
+          case IDC_PASSPHRASE2STATIC:
+          case IDC_PASSPHRASE2EDIT:
+            topic = WINHELP_CTX_puttygen_passphrase; break;
+          case IDC_LOADSTATIC:
+          case IDC_LOAD:
+            topic = WINHELP_CTX_puttygen_load; break;
+          case IDC_SAVESTATIC:
+          case IDC_SAVE:
+            topic = WINHELP_CTX_puttygen_savepriv; break;
+          case IDC_SAVEPUB:
+            topic = WINHELP_CTX_puttygen_savepub; break;
+          case IDC_TYPESTATIC:
+          case IDC_KEYSSH1:
+          case IDC_KEYSSH2RSA:
+          case IDC_KEYSSH2DSA:
+          case IDC_KEYSSH2ECDSA:
+          case IDC_KEYSSH2ED25519:
+            topic = WINHELP_CTX_puttygen_keytype; break;
+          case IDC_BITSSTATIC:
+          case IDC_BITS:
+            topic = WINHELP_CTX_puttygen_bits; break;
+          case IDC_IMPORT:
+          case IDC_EXPORT_OPENSSH_AUTO:
+          case IDC_EXPORT_OPENSSH_NEW:
+          case IDC_EXPORT_SSHCOM:
+            topic = WINHELP_CTX_puttygen_conversions; break;
+        }
+        if (topic) {
+          launch_help(hwnd, topic);
+        } else {
+          MessageBeep(0);
         }
         break;
+      }
       case WM_CLOSE:
         state = (struct MainDlgState *) GetWindowLongPtr(hwnd, GWLP_USERDATA);
         sfree(state);
@@ -1554,6 +1545,8 @@ void cleanup_exit(int code)
     exit(code);
 }
 
+HINSTANCE hinst;
+
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 {
     int argc, i;
@@ -1564,7 +1557,6 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 
     init_common_controls();
     hinst = inst;
-    hwnd = NULL;
 
     /*
      * See if we can find our Help file.
@@ -1575,7 +1567,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 
     for (i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "-pgpfp")) {
-            pgp_fingerprints();
+            pgp_fingerprints_msgbox(NULL);
             return 1;
         } else if (!strcmp(argv[i], "-restrict-acl") ||
                    !strcmp(argv[i], "-restrict_acl") ||

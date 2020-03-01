@@ -311,8 +311,8 @@ static void ssh_got_ssh_version(struct ssh_version_receiver *rcv,
         ssh_connect_bpp(ssh);
 
         connection_layer = ssh2_connection_new(
-            ssh, NULL, false, ssh->conf, ssh_verstring_get_remote(old_bpp),
-            &ssh->cl);
+            ssh, ssh->connshare, false, ssh->conf,
+            ssh_verstring_get_remote(old_bpp), &ssh->cl);
         ssh_connect_ppl(ssh, connection_layer);
         ssh->base_layer = connection_layer;
     }
@@ -457,7 +457,8 @@ static void ssh_initiate_connection_close(Ssh *ssh)
     va_list ap;                                 \
     va_start(ap, fmt);                          \
     msg = dupvprintf(fmt, ap);                  \
-    va_end(ap);
+    va_end(ap);                                 \
+    ((void)0) /* eat trailing semicolon */
 
 void ssh_remote_error(Ssh *ssh, const char *fmt, ...)
 {
@@ -557,12 +558,12 @@ void ssh_user_close(Ssh *ssh, const char *fmt, ...)
     }
 }
 
-void ssh_deferred_abort_callback(void *vctx)
+static void ssh_deferred_abort_callback(void *vctx)
 {
     Ssh *ssh = (Ssh *)vctx;
     char *msg = ssh->deferred_abort_message;
     ssh->deferred_abort_message = NULL;
-    ssh_sw_abort(ssh, msg);
+    ssh_sw_abort(ssh, "%s", msg);
     sfree(msg);
 }
 
@@ -575,8 +576,8 @@ void ssh_sw_abort_deferred(Ssh *ssh, const char *fmt, ...)
     }
 }
 
-static void ssh_socket_log(Plug *plug, int type, SockAddr *addr, int port,
-                           const char *error_msg, int error_code)
+static void ssh_socket_log(Plug *plug, PlugLogType type, SockAddr *addr,
+                           int port, const char *error_msg, int error_code)
 {
     Ssh *ssh = container_of(plug, Ssh, plug);
 
@@ -743,7 +744,7 @@ static const char *connect_to_host(
         ssh->fullhostname = NULL;
         *realhost = dupstr(host);      /* best we can do */
 
-        if ((flags & FLAG_VERBOSE) || (flags & FLAG_INTERACTIVE)) {
+        if (seat_verbose(ssh->seat) || seat_interactive(ssh->seat)) {
             /* In an interactive session, or in verbose mode, announce
              * in the console window that we're a sharing downstream,
              * to avoid confusing users as to why this session doesn't
@@ -860,15 +861,20 @@ static void ssh_cache_conf_values(Ssh *ssh)
     ssh->pls.omit_data = conf_get_bool(ssh->conf, CONF_logomitdata);
 }
 
+bool ssh_is_bare(Ssh *ssh)
+{
+    return ssh->backend.vt->protocol == PROT_SSHCONN;
+}
+
 /*
  * Called to set up the connection.
  *
  * Returns an error message, or NULL on success.
  */
-static const char *ssh_init(Seat *seat, Backend **backend_handle,
-                            LogContext *logctx, Conf *conf,
-                            const char *host, int port, char **realhost,
-                            bool nodelay, bool keepalive)
+static const char *ssh_init(const BackendVtable *vt, Seat *seat,
+                            Backend **backend_handle, LogContext *logctx,
+                            Conf *conf, const char *host, int port,
+                            char **realhost, bool nodelay, bool keepalive)
 {
     const char *p;
     Ssh *ssh;
@@ -890,8 +896,10 @@ static const char *ssh_init(Seat *seat, Backend **backend_handle,
     ssh->term_width = conf_get_int(ssh->conf, CONF_width);
     ssh->term_height = conf_get_int(ssh->conf, CONF_height);
 
-    ssh->backend.vt = &ssh_backend;
+    ssh->backend.vt = vt;
     *backend_handle = &ssh->backend;
+
+    ssh->bare_connection = (vt->protocol == PROT_SSHCONN);
 
     ssh->seat = seat;
     ssh->cl_dummy.logctx = ssh->logctx = logctx;
@@ -996,7 +1004,8 @@ static size_t ssh_sendbuffer(Backend *be)
 
     backlog = ssh_stdin_backlog(ssh->cl);
 
-    /* FIXME: also include sizes of pqs */
+    if (ssh->base_layer)
+        backlog += ssh_ppl_queued_data_size(ssh->base_layer);
 
     /*
      * If the SSH socket itself has backed up, add the total backup
@@ -1052,21 +1061,21 @@ static const SessionSpecial *ssh_get_specials(Backend *be)
      * and amalgamate the list into one combined one.
      */
 
-    struct ssh_add_special_ctx ctx;
+    struct ssh_add_special_ctx ctx[1];
 
-    ctx.specials = NULL;
-    ctx.nspecials = ctx.specials_size = 0;
+    ctx->specials = NULL;
+    ctx->nspecials = ctx->specials_size = 0;
 
     if (ssh->base_layer)
-        ssh_ppl_get_specials(ssh->base_layer, ssh_add_special, &ctx);
+        ssh_ppl_get_specials(ssh->base_layer, ssh_add_special, ctx);
 
-    if (ctx.specials) {
+    if (ctx->specials) {
         /* If the list is non-empty, terminate it with a SS_EXITMENU. */
-        ssh_add_special(&ctx, NULL, SS_EXITMENU, 0);
+        ssh_add_special(ctx, NULL, SS_EXITMENU, 0);
     }
 
     sfree(ssh->specials);
-    ssh->specials = ctx.specials;
+    ssh->specials = ctx->specials;
     return ssh->specials;
 }
 
@@ -1188,7 +1197,29 @@ const struct BackendVtable ssh_backend = {
     ssh_unthrottle,
     ssh_cfg_info,
     ssh_test_for_upstream,
-    "ssh",
+    "ssh", "SSH",
     PROT_SSH,
     22
+};
+
+const struct BackendVtable sshconn_backend = {
+    ssh_init,
+    ssh_free,
+    ssh_reconfig,
+    ssh_send,
+    ssh_sendbuffer,
+    ssh_size,
+    ssh_special,
+    ssh_get_specials,
+    ssh_connected,
+    ssh_return_exitcode,
+    ssh_sendok,
+    ssh_ldisc,
+    ssh_provide_ldisc,
+    ssh_unthrottle,
+    ssh_cfg_info,
+    ssh_test_for_upstream,
+    "ssh-connection", "Bare ssh-connection",
+    PROT_SSHCONN,
+    0
 };

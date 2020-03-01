@@ -71,6 +71,7 @@ static void ssh2_transport_special_cmd(PacketProtocolLayer *ppl,
 static bool ssh2_transport_want_user_input(PacketProtocolLayer *ppl);
 static void ssh2_transport_got_user_input(PacketProtocolLayer *ppl);
 static void ssh2_transport_reconfigure(PacketProtocolLayer *ppl, Conf *conf);
+static size_t ssh2_transport_queued_data_size(PacketProtocolLayer *ppl);
 
 static void ssh2_transport_set_max_data_size(struct ssh2_transport_state *s);
 static unsigned long sanitise_rekey_time(int rekey_time, unsigned long def);
@@ -84,6 +85,7 @@ static const struct PacketProtocolLayerVtable ssh2_transport_vtable = {
     ssh2_transport_want_user_input,
     ssh2_transport_got_user_input,
     ssh2_transport_reconfigure,
+    ssh2_transport_queued_data_size,
     NULL, /* no protocol name for this layer */
 };
 
@@ -265,7 +267,7 @@ static void ssh2_mkkey(
      */
     keylen_padded = ((keylen + hlen - 1) / hlen) * hlen;
 
-    out->len = 0;
+    strbuf_clear(out);
     key = strbuf_append(out, keylen_padded);
 
     /* First hlen bytes. */
@@ -275,25 +277,25 @@ static void ssh2_mkkey(
     put_data(h, H, hlen);
     put_byte(h, chr);
     put_data(h, s->session_id, s->session_id_len);
-    ssh_hash_final(h, key);
+    ssh_hash_digest(h, key);
 
     /* Subsequent blocks of hlen bytes. */
     if (keylen_padded > hlen) {
         int offset;
 
-        h = ssh_hash_new(s->kex_alg->hash);
+        ssh_hash_reset(h);
         if (!(s->ppl.remote_bugs & BUG_SSH2_DERIVEKEY))
             put_mp_ssh2(h, K);
         put_data(h, H, hlen);
 
         for (offset = hlen; offset < keylen_padded; offset += hlen) {
             put_data(h, key + offset - hlen, hlen);
-            ssh_hash *h2 = ssh_hash_copy(h);
-            ssh_hash_final(h2, key + offset);
+            ssh_hash_digest_nondestructive(h, key + offset);
         }
 
-        ssh_hash_free(h);
     }
+
+    ssh_hash_free(h);
 }
 
 /*
@@ -1083,7 +1085,7 @@ static void ssh2_transport_process_queue(PacketProtocolLayer *ppl)
      * Construct our KEXINIT packet, in a strbuf so we can refer to it
      * later.
      */
-    s->client_kexinit->len = 0;
+    strbuf_clear(s->client_kexinit);
     put_byte(s->outgoing_kexinit, SSH2_MSG_KEXINIT);
     random_read(strbuf_append(s->outgoing_kexinit, 16), 16);
     ssh2_write_kexinit_lists(
@@ -1121,7 +1123,7 @@ static void ssh2_transport_process_queue(PacketProtocolLayer *ppl)
                                       s->ppl.bpp->pls->actx, pktin->type));
         return;
     }
-    s->incoming_kexinit->len = 0;
+    strbuf_clear(s->incoming_kexinit);
     put_byte(s->incoming_kexinit, SSH2_MSG_KEXINIT);
     put_data(s->incoming_kexinit, get_ptr(pktin), get_avail(pktin));
 
@@ -1200,9 +1202,7 @@ static void ssh2_transport_process_queue(PacketProtocolLayer *ppl)
             if (better) {
                 if (betteralgs) {
                     char *old_ba = betteralgs;
-                    betteralgs = dupcat(betteralgs, ",",
-                                        hktype->alg->ssh_id,
-                                        (const char *)NULL);
+                    betteralgs = dupcat(betteralgs, ",", hktype->alg->ssh_id);
                     sfree(old_ba);
                 } else {
                     betteralgs = dupstr(hktype->alg->ssh_id);
@@ -2029,4 +2029,13 @@ static int ssh2_transport_confirm_weak_crypto_primitive(
 
     return seat_confirm_weak_crypto_primitive(
         s->ppl.seat, type, name, ssh2_transport_dialog_callback, s);
+}
+
+static size_t ssh2_transport_queued_data_size(PacketProtocolLayer *ppl)
+{
+    struct ssh2_transport_state *s =
+        container_of(ppl, struct ssh2_transport_state, ppl);
+
+    return (ssh_ppl_default_queued_data_size(ppl) +
+            ssh_ppl_queued_data_size(s->higher_layer));
 }
